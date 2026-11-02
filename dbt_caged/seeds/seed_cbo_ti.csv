@@ -1,0 +1,26 @@
+cbo_ocupacao,nome_ocupacao,familia_cbo,nome_familia,nivel_carreira
+142505,Gerente de infraestrutura de tecnologia da informação,1425,Gerentes de tecnologia da informação,Gestão
+142510,Gerente de desenvolvimento de sistemas,1425,Gerentes de tecnologia da informação,Gestão
+142515,Gerente de operação de tecnologia da informação,1425,Gerentes de tecnologia da informação,Gestão
+142520,Gerente de projetos de tecnologia da informação,1425,Gerentes de tecnologia da informação,Gestão
+142525,Gerente de segurança da informação,1425,Gerentes de tecnologia da informação,Gestão
+142530,Gerente de suporte técnico de tecnologia da informação,1425,Gerentes de tecnologia da informação,Gestão
+142535,Tecnólogo em gestão da tecnologia da informação,1425,Gerentes de tecnologia da informação,Gestão
+212205,Engenheiro de aplicativos em computação,2122,Engenheiros em computação,Superior / Analista
+212210,Engenheiro de equipamentos em computação,2122,Engenheiros em computação,Superior / Analista
+212215,Engenheiros de sistemas operacionais em computação,2122,Engenheiros em computação,Superior / Analista
+212305,Administrador de banco de dados,2123,Administradores de tecnologia da informação,Superior / Analista
+212310,Administrador de redes,2123,Administradores de tecnologia da informação,Superior / Analista
+212315,Administrador de sistemas operacionais,2123,Administradores de tecnologia da informação,Superior / Analista
+212320,Administrador em segurança da informação,2123,Administradores de tecnologia da informação,Superior / Analista
+212405,Analista de desenvolvimento de sistemas,2124,Analistas de tecnologia da informação,Superior / Analista
+212410,Analista de redes e de comunicação de dados,2124,Analistas de tecnologia da informação,Superior / Analista
+212415,Analista de sistemas de automação,2124,Analistas de tecnologia da informação,Superior / Analista
+212420,Analista de suporte computacional,2124,Analistas de tecnologia da informação,Superior / Analista
+212425,Arquiteto de soluções de tecnologia da informação,2124,Analistas de tecnologia da informação,Superior / Analista
+212430,Analista de testes de tecnologia da informação,2124,Analistas de tecnologia da informação,Superior / Analista
+317105,Programador de internet,3171,Técnicos de desenvolvimento de sistemas e aplicações,Técnico
+317110,Programador de sistemas de informação,3171,Técnicos de desenvolvimento de sistemas e aplicações,Técnico
+317120,Programador de multimídia,3171,Técnicos de desenvolvimento de sistemas e aplicações,Técnico
+317205,Operador de computador (inclusive microcomputador),3172,Técnicos em operação e monitoração de computadores,Técnico
+317210,Técnico de apoio ao usuário de informática (helpdesk),3172,Técnicos em operação e monitoração de computadores,Técnico

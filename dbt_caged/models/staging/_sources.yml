@@ -1,0 +1,14 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: "Parquets na camada Bronze gerados por src/extract_ftp.py"
+    meta:
+      external_location: "{{ var('bronze_path') }}/{name}/*/*.parquet"
+    tables:
+      - name: caged_mov
+        description: "Movimentações declaradas dentro do prazo"
+      - name: caged_for
+        description: "Movimentações declaradas fora do prazo"
+      - name: caged_exc
+        description: "Exclusões de movimentações"

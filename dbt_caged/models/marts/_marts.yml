@@ -1,0 +1,41 @@
+version: 2
+
+models:
+  - name: dim_cbo
+    description: "Dimensão de ocupações (CBO 2002) pertencentes ao escopo de TI"
+    columns:
+      - name: cbo_ocupacao
+        description: "Código de 6 dígitos da CBO 2002"
+        tests:
+          - unique
+          - not_null
+      - name: nome_ocupacao
+        tests:
+          - not_null
+      - name: familia_cbo
+        tests:
+          - not_null
+
+  - name: fato_movimentacoes_ti
+    description: "Tabela fato de movimentações formais em TI no Novo CAGED (MOV + FOR - EXC)"
+    columns:
+      - name: competencia_mov
+        tests:
+          - not_null
+      - name: uf_codigo
+        tests:
+          - not_null
+      - name: cbo_ocupacao
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_cbo')
+                field: cbo_ocupacao
+      - name: saldo_ajustado
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [-1, 1]
+                quote: false

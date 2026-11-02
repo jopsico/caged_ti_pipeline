@@ -1,0 +1,31 @@
+name: "dbt_caged"
+version: "1.0.0"
+config-version: 2
+profile: "dbt_caged"
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  bronze_path: "../data/bronze"
+
+models:
+  dbt_caged:
+    staging:
+      +materialized: view
+      +schema: silver
+    marts:
+      +materialized: table
+      +schema: gold
+
+seeds:
+  dbt_caged:
+    +schema: silver
+    seed_cbo_ti:
+      +column_types:
+        cbo_ocupacao: varchar
+        familia_cbo: varchar

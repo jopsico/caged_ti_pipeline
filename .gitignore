@@ -1,0 +1,24 @@
+﻿# Dados locais e banco DuckDB
+data/
+*.duckdb
+*.duckdb.wal
+*.parquet
+*.7z
+
+# Artefatos e logs do dbt
+dbt_caged/target/
+dbt_caged/logs/
+dbt_caged/dbt_packages/
+
+# Ambiente Python e caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+.DS_Store
+
+logs/
+**/logs/
+**/.user.yml

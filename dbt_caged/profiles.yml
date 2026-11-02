@@ -1,0 +1,7 @@
+dbt_caged:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: ../data/caged.duckdb
+      threads: 1
