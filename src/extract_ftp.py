@@ -22,6 +22,7 @@ import logging
 import shutil
 import tempfile
 import time
+import unicodedata
 from ftplib import FTP, Error, error_perm
 from pathlib import Path
 
@@ -36,10 +37,52 @@ BRONZE_DIR = ROOT / "data" / "bronze"
 TMP_DIR = ROOT / "data" / "tmp"
 MAX_TENTATIVAS = 3
 
+# Contrato mínimo da fonte: colunas consumidas pela camada Silver (macro stg_caged_base).
+COLUNAS_OBRIGATORIAS_BASE = (
+    "competênciamov",
+    "competênciadec",
+    "região",
+    "uf",
+    "município",
+    "seção",
+    "subclasse",
+    "cbo2002ocupação",
+    "categoria",
+    "graudeinstrução",
+    "idade",
+    "horascontratuais",
+    "raçacor",
+    "sexo",
+    "tipoempregador",
+    "tipoestabelecimento",
+    "tipomovimentação",
+    "tipodedeficiência",
+    "indtrabintermitente",
+    "indtrabparcial",
+    "tamestabjan",
+    "indicadoraprendiz",
+    "origemdainformação",
+    "indicadordeforadoprazo",
+    "unidadesaláriocódigo",
+    "salário",
+    "valorsaláriofixo",
+    "saldomovimentação",
+)
+COLUNAS_OBRIGATORIAS_EXC = ("indicadordeexclusão", "competênciaexc")
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger("extract_ftp")
+
+
+def validar_competencia(competencia: str) -> str:
+    """Valida o formato AAAAMM (mês 01-12) e retorna a própria competência."""
+    if len(competencia) != 6 or not competencia.isdigit():
+        raise ValueError(f"Competência inválida: {competencia} (use AAAAMM)")
+    if not 1 <= int(competencia[4:]) <= 12:
+        raise ValueError(f"Competência inválida: {competencia} (mês fora de 01-12)")
+    return competencia
 
 
 def conectar() -> FTP:
@@ -92,12 +135,40 @@ def baixar(ftp: FTP, competencia: str, nome: str, destino: Path) -> bool:
     return True
 
 
+def validar_colunas_txt(txt: Path, tipo: str) -> None:
+    """Garante que o cabeçalho do .txt contém as colunas exigidas pela Silver.
+
+    Lê apenas a primeira linha. Levanta ValueError listando as colunas ausentes.
+    """
+    with txt.open("rb") as f:
+        cabecalho = f.readline().decode("utf-8-sig").strip()
+    presentes = {
+        unicodedata.normalize("NFC", c).strip().strip('"').lower()
+        for c in cabecalho.split(";")
+    }
+    obrigatorias = COLUNAS_OBRIGATORIAS_BASE + (
+        COLUNAS_OBRIGATORIAS_EXC if tipo == "EXC" else ()
+    )
+    ausentes = [
+        c
+        for c in obrigatorias
+        if unicodedata.normalize("NFC", c).lower() not in presentes
+    ]
+    if ausentes:
+        raise ValueError(
+            f"{txt.name} ({tipo}) quebrou o contrato da fonte; "
+            f"colunas obrigatórias ausentes: {', '.join(ausentes)}"
+        )
+
+
 def txt_para_parquet(txt: Path, saida: Path, competencia: str, tipo: str) -> None:
+    validar_colunas_txt(txt, tipo)
     saida.parent.mkdir(parents=True, exist_ok=True)
     parcial = saida.with_suffix(".parquet.part")
     con = duckdb.connect()
     try:
-        con.execute(f"""
+        try:
+            con.execute(f"""
             COPY (
                 SELECT *,
                        '{competencia}'   AS _competencia_arquivo,
@@ -114,9 +185,12 @@ def txt_para_parquet(txt: Path, saida: Path, competencia: str, tipo: str) -> Non
                 )
             ) TO '{parcial.as_posix()}' (FORMAT parquet, COMPRESSION zstd)
         """)
-    finally:
-        con.close()
-    parcial.replace(saida)  # escrita atômica
+        finally:
+            con.close()
+        parcial.replace(saida)  # escrita atômica
+    except BaseException:
+        parcial.unlink(missing_ok=True)
+        raise
 
 
 def processar(ftp: FTP, competencia: str, tipo: str, force: bool) -> FTP:
@@ -186,12 +260,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    try:
+        for comp in args.competencia or []:
+            validar_competencia(comp)
+        if args.ano and not (len(args.ano) == 4 and args.ano.isdigit()):
+            raise ValueError(f"Ano inválido: {args.ano} (use AAAA)")
+    except ValueError as e:
+        parser.error(str(e))
+
     ftp = conectar()
     try:
         competencias = args.competencia or listar_competencias(ftp, args.ano)
         for comp in competencias:
-            if len(comp) != 6 or not comp.isdigit():
-                parser.error(f"Competência inválida: {comp} (use AAAAMM)")
             for tipo in args.tipos:
                 ftp = processar(ftp, comp, tipo, args.force)
     finally:
