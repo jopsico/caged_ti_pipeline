@@ -137,16 +137,34 @@ st.markdown(
     "Camada **Gold** (`DuckDB` + `dbt`) comparando **Ceará, Resto do Nordeste e Resto do Brasil**."
 )
 
-kpi = consultar(
+# Abordagem híbrida: contagens e saldo são aditivos e vêm do mart pré-agregado
+# (poucas linhas, consulta barata). Medianas NÃO são aditivas (não podem ser
+# recompostas a partir de medianas parciais), então são calculadas sobre o grão
+# individual de `fato_movimentacoes_ti`, apenas para as duas métricas que exigem.
+kpi_volume = consultar(
     f"""
     SELECT
-        SUM(is_admissao_ativa)                                                    AS admissoes,
-        SUM(is_desligamento_ativo)                                                AS desligamentos,
-        SUM(saldo_ajustado)                                                       AS saldo,
-        MEDIAN(CASE WHEN is_admissao_ativa = 1 THEN salario_valido END)           AS med_entrou,
-        MEDIAN(CASE WHEN is_desligamento_ativo = 1 THEN salario_valido END)       AS med_saiu,
-        100.0 * SUM(CASE WHEN is_admissao_ativa = 1 AND idade <= 24 THEN 1 ELSE 0 END)
-              / NULLIF(SUM(is_admissao_ativa), 0)                                 AS pct_jovens
+        CAST(SUM(total_admissoes) AS BIGINT)                          AS admissoes,
+        CAST(SUM(total_desligamentos) AS BIGINT)                      AS desligamentos,
+        CAST(SUM(saldo_liquido) AS BIGINT)                            AS saldo,
+        100.0 * SUM(admissoes_jovens_ate_24)
+              / NULLIF(SUM(total_admissoes), 0)                       AS pct_jovens
+    FROM gold.agg_caged_ti_mensal
+    WHERE {FILTRO}
+    """,
+    PARAMS,
+    versao=versao,
+).iloc[0]
+
+if pd.isna(kpi_volume["admissoes"]) or kpi_volume["admissoes"] == 0:
+    st.info("Nenhuma movimentação encontrada para os filtros selecionados.")
+    st.stop()
+
+kpi_medianas = consultar(
+    f"""
+    SELECT
+        MEDIAN(CASE WHEN is_admissao_ativa = 1 THEN salario_valido END)     AS med_entrou,
+        MEDIAN(CASE WHEN is_desligamento_ativo = 1 THEN salario_valido END) AS med_saiu
     FROM gold.fato_movimentacoes_ti
     WHERE {FILTRO}
     """,
@@ -154,9 +172,7 @@ kpi = consultar(
     versao=versao,
 ).iloc[0]
 
-if pd.isna(kpi["admissoes"]) or kpi["admissoes"] == 0:
-    st.info("Nenhuma movimentação encontrada para os filtros selecionados.")
-    st.stop()
+kpi = pd.concat([kpi_volume, kpi_medianas])
 
 gap = (kpi["med_entrou"] / kpi["med_saiu"] - 1) * 100 if kpi["med_saiu"] else None
 c1, c2, c3, c4, c5, c6 = st.columns(6)

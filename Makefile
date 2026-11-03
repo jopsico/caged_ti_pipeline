@@ -1,9 +1,9 @@
-PYTHON ?= py
+PYTHON ?= python
 DBT_DIR := dbt_caged
 DBT := cd $(DBT_DIR) && $(PYTHON) -m dbt.cli.main
 COMP ?= 202601
 
-.PHONY: help setup extract seed run test build docs pipeline clean
+.PHONY: help setup extract seed run test pytest build docs pipeline clean
 
 help:
 	@echo "setup    - instala dependencias do requirements.txt"
@@ -11,6 +11,7 @@ help:
 	@echo "seed     - carrega seed_cbo_ti.csv no DuckDB"
 	@echo "run      - executa modelos Silver e Gold no dbt"
 	@echo "test     - executa testes de qualidade de dados no dbt"
+	@echo "pytest   - executa testes automatizados com dados sinteticos"
 	@echo "build    - executa seed + run + test no dbt"
 	@echo "pipeline - executa extract + build completo"
 
@@ -28,6 +29,9 @@ run:
 
 test:
 	$(DBT) test --profiles-dir .
+
+pytest:
+	$(PYTHON) -m pytest -q
 
 build:
 	$(DBT) build --profiles-dir .

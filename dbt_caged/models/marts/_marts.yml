@@ -39,3 +39,33 @@ models:
               arguments:
                 values: [-1, 1]
                 quote: false
+  - name: agg_caged_ti_mensal
+    description: "Agregado mensal (competencia x recorte geografico x nivel de carreira)"
+    columns:
+      - name: competencia_mov
+        tests:
+          - not_null
+      - name: recorte_geografico
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Ceará', 'Resto do Nordeste', 'Resto do Brasil']
+      - name: nivel_carreira
+        tests:
+          - not_null
+      - name: total_admissoes
+        tests:
+          - not_null
+      - name: total_desligamentos
+        tests:
+          - not_null
+      - name: saldo_liquido
+        tests:
+          - not_null
+      - name: admissoes_primeiro_emprego
+        tests:
+          - not_null
+      - name: admissoes_jovens_ate_24
+        tests:
+          - not_null

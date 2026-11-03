@@ -21,7 +21,10 @@ jobs:
           pip install -r requirements.txt ruff
 
       - name: Lint Python (Ruff)
-        run: ruff check src/
+        run: ruff check src/ tests/
+
+      - name: Testes automatizados (pytest)
+        run: python -m pytest -q
 
       - name: Validar projeto dbt (Parse & Seed)
         working-directory: dbt_caged
