@@ -3,7 +3,7 @@ DBT_DIR := dbt_caged
 DBT := cd $(DBT_DIR) && $(PYTHON) -m dbt.cli.main
 COMP ?= 202601
 
-.PHONY: help setup extract seed run test pytest build docs pipeline clean
+.PHONY: help setup extract seed run test pytest metricas build docs pipeline clean
 
 help:
 	@echo "setup    - instala dependencias do requirements.txt"
@@ -12,6 +12,7 @@ help:
 	@echo "run      - executa modelos Silver e Gold no dbt"
 	@echo "test     - executa testes de qualidade de dados no dbt"
 	@echo "pytest   - executa testes automatizados com dados sinteticos"
+	@echo "metricas - imprime as metricas consolidadas direto da Gold (conferir README)"
 	@echo "build    - executa seed + run + test no dbt"
 	@echo "pipeline - executa extract + build completo"
 
@@ -32,6 +33,9 @@ test:
 
 pytest:
 	$(PYTHON) -m pytest -q
+
+metricas:
+	$(PYTHON) src/metricas.py
 
 build:
 	$(DBT) build --profiles-dir .

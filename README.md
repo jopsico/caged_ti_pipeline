@@ -10,7 +10,7 @@
 
 - **Problema:** o Novo CAGED publica microdados brutos, em `.7z`, com schemas divergentes entre arquivos e variáveis degradadas pós-eSocial, o que dificulta medir a dinâmica salarial e de entrada no emprego formal de TI.
 - **Solução:** pipeline *Medallion* local (FTP → Parquet → dbt/DuckDB → Streamlit), com ingestão idempotente e atômica, regras contábeis de exclusão, saneamento de outliers e testes de grão, reconciliação e `pytest` com dados sintéticos.
-- **Principal achado:** em Técnico e Superior / Analista, quem entra tem mediana salarial inferior à de quem sai em todos os recortes, e a base Técnica concentra a absorção de jovens (≤ 24 anos: 42,7% das admissões no Ceará e 49,6% no Resto do Nordeste).
+- **Principal achado:** no nível Técnico, a mediana salarial de admissão é inferior à de desligamento nos três recortes (-3,8% a -7,1%), e a base Técnica concentra a absorção de jovens (≤ 24 anos: 42,7% das admissões no Ceará e 49,6% no Resto do Nordeste). Em Superior / Analista o Ceará fica estável (+0,1%), ao contrário do restante do país.
 
 ![Dashboard](docs/dashboard.png)
 
@@ -23,7 +23,7 @@ Pipeline de Engenharia de Dados (*Modern Data Stack in a Box*) para extração, 
 3. [Modelagem Dimensional e Testes de Qualidade (dbt)](#modelagem-dimensional-e-testes-de-qualidade-dbt)
 4. [Limitações Conhecidas dos Dados](#limitações-conhecidas-dos-dados)
 5. [Perguntas de Negócio e Hipóteses Testáveis](#perguntas-de-negócio-e-hipóteses-testáveis)
-6. [Resultados e Conclusões Analíticas](#resultados-e-conclusões-analíticas-safra-2025-a-2026)
+6. [Resultados e Conclusões Analíticas](#resultados-e-conclusões-analíticas-012025-a-082026)
 7. [Estrutura do Repositório](#estrutura-do-repositório)
 8. [Como Executar](#como-executar)
 9. [Stack Tecnológica](#stack-tecnológica)
@@ -33,6 +33,8 @@ Pipeline de Engenharia de Dados (*Modern Data Stack in a Box*) para extração, 
 ## Arquitetura (Medallion)
 
 O pipeline foi desenhado para operar localmente com baixo consumo de disco e alta performance colunar, eliminando arquivos brutos intermediários após a conversão atômica para Parquet:
+
+![Arquitetura do Pipeline](docs/arquitetura.svg)
 
 ```text
 FTP MTE (.7z) ──► data/tmp (.txt) ──► Bronze (Parquet ZSTD) ──► Silver (dbt views) ──► Gold (dbt tables) ──► Data Serving (Streamlit / src/app.py)
@@ -81,11 +83,14 @@ Como os microdados não são identificados (sem CPF/CNPJ), múltiplas contrataç
 ### 6. Não-Aditividade da Mediana
 A mediana **não é uma métrica aditiva**: calcular a média de medianas (ou reagregar medianas de UFs para regiões) gera distorção. Por isso, o mart [`agg_caged_ti_mensal`](dbt_caged/models/marts/agg_caged_ti_mensal.sql) calcula as medianas diretamente a partir do grão individual de `fato_movimentacoes_ti`, já no recorte final de consumo.
 
+### 7. Janela de Análise e Retificações Anteriores
+A janela analisada é definida pelos dados, e não por constante: vai da menor à maior `competencia_mov` presente nos arquivos **MOV** (declaração dentro do prazo). Os arquivos FOR (fora do prazo) e EXC (exclusões) também referenciam competências anteriores, mas só como retificações parciais, sem o MOV correspondente. Esses registros permanecem na Gold, preservando a linhagem, e ficam **fora** do dashboard e das métricas consolidadas. Misturá-los distorcia os indicadores: eram 689 registros FOR e 1.131 EXC anteriores a 01/2025.
+
 ---
 
 ## Modelagem Dimensional e Testes de Qualidade (dbt)
 
-Objetos materializados no banco `data/caged.duckdb` e testes de qualidade executados via `dbt test` / `dbt build` (**21 testes de dados**, incluindo os testes singulares de grão e reconciliação):
+Objetos materializados no banco `data/caged.duckdb` e testes de qualidade executados via `dbt test` / `dbt build` (**22 testes de dados**, incluindo os testes singulares de grão, reconciliação e regras de exclusão, todos passando na camada Gold local):
 
 | Objeto | Materialização | Descrição | Testes de Qualidade |
 | :--- | :---: | :--- | :--- |
@@ -97,7 +102,8 @@ Objetos materializados no banco `data/caged.duckdb` e testes de qualidade execut
 | `gold.agg_caged_ti_mensal` | Table | Mart pré-agregado mensal (Competência × Recorte × Carreira) para consumo no Streamlit. | `not_null` nas chaves (`competencia_mov`, `recorte_geografico`, `nivel_carreira`) e nas métricas aditivas (`total_admissoes`, `total_desligamentos`, `saldo_liquido`, `admissoes_primeiro_emprego`, `admissoes_jovens_ate_24`); `accepted_values` em `recorte_geografico` |
 | `assert_agg_unique_grain` | Teste singular | Garante uma única linha por (`competencia_mov`, `recorte_geografico`, `nivel_carreira`) no agregado. | Falha se retornar qualquer linha |
 | `assert_reconciliacao_saldo_fato_vs_agg` | Teste singular | Reconcilia fato × agregado **por grupo** (`competencia_mov`, `recorte_geografico`, `nivel_carreira`) via `FULL OUTER JOIN` + `IS DISTINCT FROM` em saldo, admissões, desligamentos e jovens ≤ 24. | Falha em qualquer divergência, inclusive compensada entre grupos, ou grupo ausente |
-| `tests/test_pipeline.py` | Suíte `pytest` | Gera Bronze sintética (MOV/FOR/EXC) e executa `dbt build` isolado. Valida inversão de sinal de exclusões (admissão e desligamento), fronteiras salariais (700,00 / 100.000,00 / 699,99), outlier, ausência de deduplicação, mediana ignorando `NULL`, classificação geográfica e reconciliação granular (inclusive detecção de divergências). Em `extract_ftp.py`: escrita atômica sem resíduo `.part`, validação de schema, validação de competência e arquivo ausente no FTP. | 28 testes; executados no CI (`python -m pytest -q`) |
+| `assert_regras_exclusao_e_saldo` | Teste singular | Invariantes da regra contábil: exclusão nunca conta como admissão/desligamento ativo; `saldo_ajustado` só inverte o sinal em exclusões; todo registro não excluído é exatamente uma admissão ativa ou um desligamento ativo. | Falha se retornar qualquer linha |
+| `tests/test_pipeline.py` | Suíte `pytest` | Gera Bronze sintética (MOV/FOR/EXC) e executa `dbt build` isolado. Valida inversão de sinal de exclusões (admissão e desligamento), fronteiras salariais (700,00 / 100.000,00 / 699,99), outlier, ausência de deduplicação, mediana ignorando `NULL`, classificação geográfica e reconciliação granular (inclusive detecção de divergências). Verifica ainda a janela de análise, o volume por critério, a reconciliação do consolidado com a fato por grupo, medianas contra cálculo independente e a fórmula do gap (`src/metricas.py`). Em `extract_ftp.py`: escrita atômica sem resíduo `.part`, validação de schema, validação de competência e arquivo ausente no FTP. | 42 testes; executados no CI (`python -m pytest -q`) |
 
 ---
 
@@ -105,6 +111,8 @@ Objetos materializados no banco `data/caged.duckdb` e testes de qualidade execut
 
 - **Recorte apenas CLT:** o Novo CAGED capta exclusivamente vínculos celetistas formais; contratações via PJ, cooperativas, estágios ou trabalho informal não constam na base.
 - **Fluxo de Contratações vs. Saturação:** os dados medem vínculos efetivados e encerrados, não o número de vagas abertas nem a quantidade de candidatos por vaga.
+- **Snapshot dos microdados:** o Novo CAGED recebe declarações fora do prazo e retificações, então os números mudam quando os arquivos são baixados novamente. Os resultados abaixo se referem à extração local de outubro/2026; as competências mais recentes são as mais sujeitas a revisão.
+- **Mediana sem deflator:** os gaps comparam medianas nominais de admitidos e desligados no mesmo período, sem correção por inflação, senioridade, porte da empresa ou composição dos cargos.
 - **Qualidade de Variáveis Desagregadas:** conforme a Nota Técnica MTPS 088/12, variáveis como Subclasse CNAE, Ocupação (CBO) e Raça/Cor podem apresentar inconsistências em níveis muito desagregados, sendo mais robustas em análises agregadas.
 
 ---
@@ -123,33 +131,52 @@ A absorção de profissionais iniciantes (≤ 24 anos) no mercado formal de TI c
 - *Métrica:* participação percentual (%) de admitidos com ≤ 24 anos no total de admissões de cada nível de carreira (Gestão, Superior/Analista, Técnico) e recorte geográfico; proporção de admissões com código `10` frente aos códigos `20` e `97`.
 - *Critério de refutação:* se a participação de jovens no nível Técnico for igual ou inferior à dos níveis Superior/Analista e Gestão, ou se o código `10` apresentar volume compatível com a proporção de jovens admitidos.
 
-**H3 — Dinâmica Regional (Ceará e Nordeste vs. Brasil)**
-O mercado formal de TI no Ceará apresenta menor volatilidade no saldo relativo, porém com gap salarial persistente em relação ao **Resto do Brasil** (todas as UFs fora do Nordeste: Sudeste, Sul, Centro-Oeste e Norte; volume fortemente puxado pelo eixo Sul-Sudeste).
-- *Métrica:* saldo líquido acumulado e mediana salarial de admissão em `UF = 23` (Ceará) comparados à média do Nordeste e do Brasil.
+**H3 — Dinâmica Regional e Diferencial Salarial (Ceará vs. Resto do Nordeste vs. Resto do Brasil)**
+O mercado formal de TI no Ceará posiciona-se acima do **Resto do Nordeste** em remuneração de entrada e mantém saldo líquido positivo nos níveis operacionais e técnicos, mas preserva um *gap* salarial estrutural em relação ao **Resto do Brasil** (todas as UFs fora do Nordeste: Sudeste, Sul, Centro-Oeste e Norte; volume fortemente puxado pelo eixo Sul-Sudeste).
+- *Métrica:* saldo líquido acumulado e mediana salarial de admissão em `UF = 23` (Ceará) comparados ao Resto do Nordeste e ao Resto do Brasil por nível de carreira, além do acompanhamento descritivo da série mensal do saldo.
+- *Critério de refutação:* se a mediana salarial de admissão no Ceará for igual ou inferior à do Resto do Nordeste na maioria dos níveis de carreira, ou se convergir para o patamar do Resto do Brasil.
+- *Escopo analítico:* a evolução mensal do saldo líquido é exibida no dashboard para inspeção visual; métricas formais de volatilidade/dispersão relativa do saldo entre recortes não foram modeladas nesta etapa.
 
 ---
 
-## Resultados e Conclusões Analíticas (Safra 2025 a 2026)
+## Resultados e Conclusões Analíticas (01/2025 a 08/2026)
 
-Após o processamento de mais de **410 mil movimentações formais de TI** na camada Gold (`gold.fato_movimentacoes_ti`), a consolidação estatística por recorte geográfico e nível de carreira revelou o seguinte cenário:
+> Os números desta seção são gerados diretamente da camada Gold por `python src/metricas.py` (`make metricas`), a mesma definição usada pelo dashboard. Em caso de nova extração, regenere-os em vez de editar valores manualmente.
+
+**Período analisado:** 01/2025 a 08/2026 (competência da movimentação)
+
+### Volume de Dados Processados
+
+| Grão / critério | Quantidade |
+| :--- | ---: |
+| Registros na fato (`fato_movimentacoes_ti`) | 802.514 |
+| Admissões ativas (MOV + FOR) | 411.903 |
+| Desligamentos ativos (MOV + FOR) | 390.112 |
+| Registros de exclusão (EXC) | 499 |
+| Saldo líquido (MOV + FOR − EXC) | +21.800 |
+| Salários neutralizados (`salario_valido` nulo) | 4.385 |
+
+> **Nomenclatura:** *registros na fato* é o grão individual de movimentação. Admissões ativas, desligamentos ativos e exclusões são critérios disjuntos que somam o total de registros; o saldo líquido não é uma contagem de registros. Por isso o volume de dados **não** equivale ao número de admissões.
+
+### Consolidado por Recorte Geográfico e Nível de Carreira
 
 | Recorte Geográfico | Nível de Carreira | Admissões | Desligamentos | Saldo Líquido | % Jovens (≤ 24 anos) | Mediana Salarial (Entrou) | Mediana Salarial (Saiu) | Gap Entrada vs. Saída |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Ceará** | Gestão | 465 | 555 | -90 | 9,2% | R$ 8.000,00 | R$ 7.361,20 | +8,7% |
-| **Ceará** | Superior / Analista | 4.071 | 3.868 | +208 | 24,9% | R$ 4.086,17 | R$ 4.102,26 | -0,4% |
-| **Ceará** | Técnico | 4.916 | 4.368 | +563 | 42,7% | R$ 2.000,00 | R$ 2.094,30 | -4,5% |
-| **Resto do Nordeste** | Gestão | 1.270 | 1.587 | -320 | 10,2% | R$ 6.491,70 | R$ 5.873,19 | +10,5% |
-| **Resto do Nordeste** | Superior / Analista | 13.371 | 12.384 | +995 | 27,3% | R$ 3.600,00 | R$ 3.993,37 | -9,8% |
-| **Resto do Nordeste** | Técnico | 14.635 | 12.018 | +2.614 | 49,6% | R$ 1.847,88 | R$ 1.918,00 | -3,7% |
-| **Resto do Brasil** | Gestão | 22.482 | 29.812 | -7.319 | 5,2% | R$ 12.612,71 | R$ 13.000,00 | -3,0% |
-| **Resto do Brasil** | Superior / Analista | 228.733 | 216.631 | +12.034 | 24,5% | R$ 5.680,00 | R$ 5.871,77 | -3,3% |
-| **Resto do Brasil** | Técnico | 122.323 | 109.215 | +12.975 | 47,0% | R$ 2.412,98 | R$ 2.600,00 | -7,2% |
+| **Ceará** | Técnico | 4.904 | 4.352 | +551 | 42,7% | R$ 2.000,00 | R$ 2.094,19 | -4,5% |
+| **Ceará** | Superior / Analista | 4.063 | 3.859 | +198 | 24,9% | R$ 4.120,46 | R$ 4.116,81 | +0,1% |
+| **Ceará** | Gestão | 464 | 555 | -91 | 9,3% | R$ 8.000,00 | R$ 7.361,20 | +8,7% |
+| **Resto do Nordeste** | Técnico | 14.610 | 11.966 | +2.647 | 49,6% | R$ 1.845,64 | R$ 1.918,00 | -3,8% |
+| **Resto do Nordeste** | Superior / Analista | 13.355 | 12.375 | +990 | 27,3% | R$ 3.600,00 | R$ 3.995,60 | -9,9% |
+| **Resto do Nordeste** | Gestão | 1.266 | 1.586 | -321 | 10,2% | R$ 6.491,70 | R$ 5.869,70 | +10,6% |
+| **Resto do Brasil** | Técnico | 122.158 | 109.095 | +13.068 | 47,0% | R$ 2.414,47 | R$ 2.600,00 | -7,1% |
+| **Resto do Brasil** | Superior / Analista | 228.615 | 216.521 | +12.077 | 24,5% | R$ 5.689,04 | R$ 5.873,98 | -3,1% |
+| **Resto do Brasil** | Gestão | 22.468 | 29.803 | -7.319 | 5,2% | R$ 12.614,41 | R$ 13.000,00 | -3,0% |
 
-> **Nota sobre o Saldo Líquido:** as colunas *Admissões* e *Desligamentos* contam apenas **eventos ativos** (MOV + FOR), enquanto o *Saldo Líquido* também desconta as **exclusões** (MOV + FOR − EXC). Por isso, em algumas linhas *Admissões − Desligamentos* difere do saldo (ex.: Ceará / Superior-Analista: 4.071 − 3.868 = 203, mas o saldo oficial é **+208**).
+> **Nota sobre o Saldo Líquido:** as colunas *Admissões* e *Desligamentos* contam apenas **eventos ativos** (MOV + FOR), enquanto o *Saldo Líquido* também desconta as **exclusões** (MOV + FOR − EXC). Por isso, em algumas linhas *Admissões − Desligamentos* difere do saldo (ex.: Ceará / Superior-Analista: 4.063 − 3.859 = 204, mas o saldo oficial é **+198**).
 
 ### Visualização Interativa (Data Serving)
 
-O dashboard em Streamlit ([`src/app.py`](src/app.py)) consome diretamente o mart `gold.agg_caged_ti_mensal` e permite filtrar os indicadores acima por competência, recorte geográfico e nível de carreira.
+O dashboard em Streamlit ([`src/app.py`](src/app.py)) consome diretamente o mart `gold.agg_caged_ti_mensal` e permite filtrar os indicadores acima por competência, recorte geográfico e nível de carreira, limitado à janela de análise (competências cobertas pelos arquivos MOV). As capturas abaixo vêm da mesma extração e do mesmo período (01/2025 a 08/2026).
 
 ![Dashboard](docs/dashboard.png)
 
@@ -173,19 +200,22 @@ O dashboard em Streamlit ([`src/app.py`](src/app.py)) consome diretamente o mart
 
 ### Veredito das Hipóteses
 
-1. **H1 (Substituição e Barateamento da Mão de Obra) — EVIDÊNCIA CONSISTENTE COM A HIPÓTESE:**
-   - Em todas as regiões do país, profissionais contratados nos níveis **Técnico** e **Superior / Analista** entram ganhando uma mediana salarial inferior à dos profissionais desligados. O maior deságio na reposição de Analistas ocorre no **Resto do Nordeste (-9,8%)**, onde a mediana cai de R$ 3.993,37 nos desligados para R$ 3.600,00 nos admitidos, seguido pelo **Resto do Brasil (-3,3%)**.
-   - **Gestão (`CBO 1425`) — indicador observado:** o saldo líquido é negativo em todos os recortes (**-7.319 no Resto do Brasil**, **-320 no Resto do Nordeste** e **-90 no Ceará**), e a mediana de admissão supera a de desligamento no Ceará (**+8,7%**) e no Resto do Nordeste (**+10,5%**), enquanto no Resto do Brasil ela é inferior (**-3,0%**).
+1. **H1 (Substituição e Barateamento da Mão de Obra) — EVIDÊNCIA PARCIALMENTE CONSISTENTE COM A HIPÓTESE:**
+   - **Técnico:** a mediana de admissão é inferior à de desligamento nos três recortes (**Ceará -4,5%**, **Resto do Nordeste -3,8%**, **Resto do Brasil -7,1%**), com gap negativo na maioria das 20 competências (12, 17 e 19, respectivamente).
+   - **Superior / Analista:** o deságio aparece no **Resto do Nordeste (-9,9%**, de R$ 3.995,60 nos desligados para R$ 3.600,00 nos admitidos) e no **Resto do Brasil (-3,1%)**. No **Ceará** as medianas são praticamente iguais (**+0,1%**: R$ 4.120,46 vs. R$ 4.116,81), e esse grupo **não** sustenta a hipótese de barateamento.
+   - **Gestão (`CBO 1425`) — indicador observado:** o saldo líquido é negativo em todos os recortes (**-7.319 no Resto do Brasil**, **-321 no Resto do Nordeste** e **-91 no Ceará**), e a mediana de admissão supera a de desligamento no Ceará (**+8,7%**) e no Resto do Nordeste (**+10,6%**), enquanto no Resto do Brasil ela é inferior (**-3,0%**).
    - **Gestão — hipótese explicativa (não demonstrada diretamente):** uma possibilidade plausível é o enxugamento de cargos intermediários com contratações pontuais em faixas superiores. Os microdados não trazem senioridade individual, então essa leitura exige controle adicional para ser confirmada e não deve ser tratada como fato.
+   - **Critério de refutação:** o gap é negativo na maioria das competências em 7 dos 9 grupos; as exceções são Gestão no Ceará (9 de 20 competências) e Gestão no Resto do Nordeste (7 de 20).
    - **Nota metodológica:** os microdados mostram um deságio salarial líquido entre o fluxo de entrada e o de saída nos mesmos grupos ocupacionais. Por serem dados anonimizados, sem identificador de empresa ou indivíduo, eles não medem substituição direta 1-para-1 no mesmo CNPJ, e a associação não é causal sem controle de variáveis adicionais (porte da empresa, senioridade, inflação e composição dos cargos).
 
 2. **H2 (Porta de Entrada e Primeiro Emprego) — EVIDÊNCIA CONSISTENTE COM A HIPÓTESE (+ ACHADO TÉCNICO DE DATA QUALITY):**
-   - **Descoberta de Engenharia (Degradação de Variável Pós-eSocial):** A auditoria na camada Gold revelou que o código oficial `tipomovimentação = 10` (*Primeiro Emprego*) encontra-se severamente subnotificado nos microdados pós-migração para o eSocial (com quase a totalidade das admissões classificadas nos códigos `20 - Reemprego` ou `97 - Admissão de tipo ignorado`).
-   - Utilizando a **faixa etária (≤ 24 anos)** como proxy confiável de entrada no mercado formal, evidencia-se que a base **Técnica** é a verdadeira locomotiva de absorção de iniciantes (representando **42,7% das contratações no Ceará** e **49,6% no Resto do Nordeste**), além de responder por **24,9%** das contratações de nível Superior/Analista no estado.
+   - **Degradação da variável de primeiro emprego:** nas admissões ativas do período, **99,95%** estão no código `97 - Admissão de tipo ignorado` e **0,05%** no código `35 - Reintegração`. Os códigos `10 - Primeiro emprego` e `20 - Reemprego` não aparecem. A variável, portanto, não discrimina o tipo de admissão neste recorte, e isso indica falta de preenchimento na origem. Não se deve inferir ausência de primeiros empregos.
+   - Utilizando a **faixa etária (≤ 24 anos)** como proxy de entrada no mercado formal, a base **Técnica** concentra a absorção de jovens (**42,7%** das admissões no Ceará, **49,6%** no Resto do Nordeste e **47,0%** no Resto do Brasil), contra 24,5% a 27,3% em Superior / Analista e 5,2% a 10,2% em Gestão. Ressalva: a idade é uma aproximação, pois um jovem de 24 anos pode ser reemprego.
 
-3. **H3 (Dinâmica Regional: Ceará vs. Nordeste vs. Resto do Brasil) — EVIDÊNCIA CONSISTENTE COM A HIPÓTESE:**
-   - O **Ceará** posiciona-se como polo remuneratório superior à média do Nordeste em todas as faixas da carreira de TI: paga **+13,5% a mais** na mediana de entrada para Analistas/Devs (**R$ 4.086,17** vs. **R$ 3.600,00**) e **+23,2% a mais** para Gestão (**R$ 8.000,00** vs. **R$ 6.491,70**).
-   - **Resto do Brasil** compreende todas as demais UFs fora do Nordeste (Regiões Sudeste, Sul, Centro-Oeste e Norte), com volume fortemente puxado pelo eixo Sul-Sudeste. Em relação a esse recorte (**R$ 5.680,00** de mediana de entrada para Analistas), o Ceará mantém um *gap* salarial de **-28,1%**, mas apresenta maior estabilidade na reposição salarial de analistas (diferença de apenas **-0,4%** entre admitidos e desligados no estado).
+3. **H3 (Dinâmica Regional: Ceará vs. Resto do Nordeste vs. Resto do Brasil) — EVIDÊNCIA PARCIALMENTE AVALIADA (CONSISTENTE NA DIMENSÃO SALARIAL E DE SALDO ACUMULADO):**
+   - **Diferencial intra-regional (Ceará vs. Resto do Nordeste):** a mediana de admissão do **Ceará** supera a do Resto do Nordeste em todos os níveis de carreira — **+8,4%** em Técnico (R$ 2.000,00 vs. R$ 1.845,64), **+14,5%** em Superior / Analista (R$ 4.120,46 vs. R$ 3.600,00) e **+23,2%** em Gestão (R$ 8.000,00 vs. R$ 6.491,70) — com saldo acumulado positivo na base técnica (**+551**) e analítica (**+198**) e retração em Gestão (**-91**).
+   - **Gap frente ao Resto do Brasil:** o grupo **Resto do Brasil** compreende todas as demais UFs fora do Nordeste (Regiões Sudeste, Sul, Centro-Oeste e Norte), com volume fortemente puxado pelo eixo Sul-Sudeste. Em relação a esse recorte, o Ceará apresenta mediana de admissão **-17,2%** menor em Técnico (R$ 2.000,00 vs. R$ 2.414,47), **-27,6%** em Superior / Analista (R$ 4.120,46 vs. R$ 5.689,04) e **-36,6%** em Gestão (R$ 8.000,00 vs. R$ 12.614,41).
+   - **Limitação de escopo (volatilidade não quantificada):** embora a série mensal do saldo líquido esteja disponível no painel para inspeção visual, a volatilidade do saldo relativo entre os recortes **não foi avaliada quantitativamente** (por exemplo, via desvio-padrão padronizado ou coeficiente de variação). Assim, os dados corroboram o posicionamento salarial intermediário do Ceará (acima do Resto do Nordeste e abaixo do Resto do Brasil), sem conclusão estatística sobre estabilidade ou volatilidade temporal do saldo.
 
 ---
 
@@ -209,8 +239,10 @@ caged_ti_pipeline/
 │   │       └── _marts.yml             # Documentação e testes da Gold
 │   └── seeds/
 │       └── seed_cbo_ti.csv            # Escopo oficial de ocupações de TI (CBO 2002)
+├── docs/                              # Diagrama de arquitetura (SVG/PNG) e capturas do dashboard
 ├── src/
 │   ├── extract_ftp.py                 # CLI de ingestão FTP → Bronze (Parquet)
+│   ├── metricas.py                    # Métricas consolidadas direto da Gold (fonte do README)
 │   └── app.py                         # Dashboard Streamlit
 ├── tests/
 │   └── test_pipeline.py               # Testes com dados sintéticos (pytest)
@@ -279,6 +311,7 @@ make setup                # instala dependências
 make extract COMP=202601  # ingestão Bronze de uma competência
 make build                # dbt seed + run + test
 make pytest               # testes automatizados com dados sintéticos
+make metricas             # métricas consolidadas da Gold, para conferir o README
 make docs                 # gera e serve a documentação do dbt
 make pipeline COMP=202601 # extract + build
 ```
