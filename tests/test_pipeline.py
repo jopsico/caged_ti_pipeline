@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 from datetime import datetime
@@ -17,6 +19,7 @@ import pandas as pd
 import pytest
 
 import extract_ftp
+import metricas
 
 ROOT = Path(__file__).resolve().parents[1]
 DBT_DIR = ROOT / "dbt_caged"
@@ -68,10 +71,11 @@ def _registro(
     saldo: int,
     idade: int = 30,
     tipo_mov: str = "20",
+    competencia: str = COMPETENCIA,
 ) -> dict[str, str]:
     uf, regiao = uf_regiao
     return {
-        "competênciamov": COMPETENCIA,
+        "competênciamov": competencia,
         "competênciadec": COMPETENCIA,
         "região": regiao,
         "uf": uf,
@@ -139,7 +143,11 @@ def bronze_sintetica(tmp_path_factory: pytest.TempPathFactory) -> Path:
         _registro(SP, CBO_TECNICO, "100,00", 1),
         _registro(SP, CBO_TECNICO, "100001,00", 1),
     ]
-    fora_prazo = [_registro(SP, CBO_ANALISTA, "6000,00", 1)]
+    fora_prazo = [
+        _registro(SP, CBO_ANALISTA, "6000,00", 1),
+        # Retificação de competência anterior à cobertura MOV: fica na Gold, fora da janela
+        _registro(CE, CBO_ANALISTA, "3300,00", 1, competencia="202412"),
+    ]
     exclusoes = [_registro(CE, CBO_ANALISTA, "3500,00", 1, tipo_mov="20")]
     exclusoes[0]["indicadordeexclusão"] = "1"
     exclusoes[0]["competênciaexc"] = COMPETENCIA
@@ -350,6 +358,148 @@ def test_reconciliacao_granular_detecta_divergencias(
     with duckdb.connect(str(copia)) as con:
         con.execute(ajuste)
     assert _consulta(copia, _sql_reconciliacao()) != []
+
+
+# ------------------------------------------------------------------ métricas e invariantes
+def _janela_e_con(db_path: Path) -> tuple[duckdb.DuckDBPyConnection, tuple[str, str]]:
+    con = duckdb.connect(str(db_path), read_only=True)
+    return con, metricas.janela_analise(con)
+
+
+def test_janela_de_analise_vem_da_cobertura_mov(gold_db: Path) -> None:
+    con, (ini, fim) = _janela_e_con(gold_db)
+    with con:
+        competencias_gold = [
+            r[0]
+            for r in con.execute(
+                "SELECT DISTINCT competencia_mov FROM gold.agg_caged_ti_mensal ORDER BY 1"
+            ).fetchall()
+        ]
+    assert (ini, fim) == (COMPETENCIA, COMPETENCIA)
+    # a retificação de 202412 existe na Gold, mas não pertence à janela analisada
+    assert "202412" in competencias_gold
+    assert all(c >= ini for c in competencias_gold if c != "202412")
+
+
+def test_consolidado_ignora_registros_fora_da_janela(gold_db: Path) -> None:
+    con, (ini, fim) = _janela_e_con(gold_db)
+    with con:
+        cons = metricas.consolidado(con, ini, fim)
+        vol = metricas.volume(con, ini, fim)
+        (adm_gold_total,) = con.execute(
+            "SELECT SUM(is_admissao_ativa) FROM gold.fato_movimentacoes_ti"
+        ).fetchone()
+    assert cons["admissoes"].sum() == vol["admissoes_ativas"]
+    assert (
+        vol["admissoes_ativas"] == adm_gold_total - 1
+    )  # exclui a retificação de 202412
+
+
+def test_volume_nao_mistura_graos(gold_db: Path) -> None:
+    """Registros = admissões ativas + desligamentos ativos + exclusões (critérios disjuntos)."""
+    con, (ini, fim) = _janela_e_con(gold_db)
+    with con:
+        vol = metricas.volume(con, ini, fim)
+    assert (
+        vol["registros"]
+        == vol["admissoes_ativas"] + vol["desligamentos_ativos"] + vol["exclusoes"]
+    )
+    assert vol["exclusoes"] == 2
+
+
+def test_consolidado_reconcilia_com_a_fato_por_grupo(gold_db: Path) -> None:
+    con, (ini, fim) = _janela_e_con(gold_db)
+    with con:
+        cons = metricas.consolidado(con, ini, fim)
+        fato = {
+            (r[0], r[1]): r[2:]
+            for r in con.execute(
+                "SELECT recorte_geografico, nivel_carreira, SUM(is_admissao_ativa), "
+                "SUM(is_desligamento_ativo), SUM(saldo_ajustado) "
+                "FROM gold.fato_movimentacoes_ti WHERE competencia_mov BETWEEN ? AND ? "
+                "GROUP BY 1, 2",
+                [ini, fim],
+            ).fetchall()
+        }
+    assert len(cons) == len(fato)
+    for r in cons.itertuples():
+        assert fato[(r.recorte_geografico, r.nivel_carreira)] == (
+            r.admissoes,
+            r.desligamentos,
+            r.saldo,
+        )
+
+
+def test_medianas_do_consolidado_conferem_com_calculo_independente(
+    gold_db: Path,
+) -> None:
+    con, (ini, fim) = _janela_e_con(gold_db)
+    with con:
+        cons = metricas.consolidado(con, ini, fim)
+        for r in cons.itertuples():
+            for flag, valor in (
+                ("is_admissao_ativa", r.med_entrou),
+                ("is_desligamento_ativo", r.med_saiu),
+            ):
+                salarios = [
+                    float(s[0])
+                    for s in con.execute(
+                        f"SELECT salario_valido FROM gold.fato_movimentacoes_ti "
+                        f"WHERE {flag} = 1 AND salario_valido IS NOT NULL "
+                        "AND competencia_mov BETWEEN ? AND ? "
+                        "AND recorte_geografico = ? AND nivel_carreira = ?",
+                        [ini, fim, r.recorte_geografico, r.nivel_carreira],
+                    ).fetchall()
+                ]
+                esperado = statistics.median(salarios) if salarios else None
+                assert (
+                    (valor is None or math.isnan(valor))
+                    if esperado is None
+                    else valor == pytest.approx(esperado)
+                )
+
+
+def test_gap_do_consolidado_segue_a_formula(gold_db: Path) -> None:
+    con, (ini, fim) = _janela_e_con(gold_db)
+    with con:
+        cons = metricas.consolidado(con, ini, fim)
+    com_gap = cons.dropna(subset=["med_entrou", "med_saiu"])
+    assert not com_gap.empty
+    for r in com_gap.itertuples():
+        assert r.gap_pct == pytest.approx((r.med_entrou / r.med_saiu - 1) * 100)
+
+
+@pytest.mark.parametrize(
+    ("entrada", "saida", "esperado"),
+    [
+        (90.0, 100.0, -10.0),
+        (110.0, 100.0, 10.0),
+        (100.0, 100.0, 0.0),
+        (100.0, 0.0, None),
+        (None, 100.0, None),
+        (100.0, None, None),
+        (float("nan"), 100.0, None),
+    ],
+)
+def test_gap_percentual(
+    entrada: float | None, saida: float | None, esperado: float | None
+) -> None:
+    resultado = metricas.gap_percentual(entrada, saida)
+    assert resultado == (pytest.approx(esperado) if esperado is not None else None)
+
+
+def test_markdown_de_metricas_usa_periodo_e_nomenclatura_precisa(gold_db: Path) -> None:
+    con, (ini, fim) = _janela_e_con(gold_db)
+    with con:
+        texto = metricas.para_markdown(con, ini, fim)
+    assert "01/2025 a 01/2025" in texto
+    for rotulo in (
+        "Registros na fato",
+        "Admissões ativas",
+        "Desligamentos ativos",
+        "Registros de exclusão",
+    ):
+        assert rotulo in texto
 
 
 # ------------------------------------------------------------------ extract_ftp.py

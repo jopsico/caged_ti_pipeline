@@ -17,6 +17,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from metricas import SQL_JANELA_ANALISE
+
 st.set_page_config(page_title="CAGED TI - Analytics", page_icon="📊", layout="wide")
 
 DB_PATH = Path(__file__).resolve().parents[1] / "data" / "caged.duckdb"
@@ -79,7 +81,8 @@ if not DB_PATH.exists():
 
 try:
     versao = _mtime()
-    competencias = (
+    janela = consultar(SQL_JANELA_ANALISE, versao=versao).iloc[0]
+    todas_competencias = (
         consultar(
             "SELECT DISTINCT competencia_mov FROM gold.agg_caged_ti_mensal ORDER BY 1",
             versao=versao,
@@ -91,19 +94,25 @@ except duckdb.Error as e:
     st.error(f"Não foi possível ler a camada Gold: {e}")
     st.stop()
 
+# A janela de análise são as competências cobertas pelos arquivos MOV. Competências
+# anteriores aparecem na Gold apenas via retificações (FOR) e exclusões (EXC), sem o
+# MOV correspondente, e por isso ficam fora do painel.
+competencias = (
+    [c for c in todas_competencias if janela["ini"] <= c <= janela["fim"]]
+    if not pd.isna(janela["ini"])
+    else []
+)
+
 if not competencias:
     st.warning("Tabela Gold vazia.")
     st.stop()
 
 st.sidebar.header("Filtros")
-# Declarações fora do prazo (FOR) e exclusões (EXC) referenciam competências antigas;
-# por padrão o painel foca na safra analisada (2025 em diante).
-padrao_ini = next((c for c in competencias if c >= "202501"), competencias[0])
 if len(competencias) > 1:
     comp_ini, comp_fim = st.sidebar.select_slider(
         "Período (competência da movimentação)",
         options=competencias,
-        value=(padrao_ini, competencias[-1]),
+        value=(competencias[0], competencias[-1]),
         format_func=fmt_comp,
     )
 else:
@@ -118,6 +127,7 @@ if not recortes_sel or not niveis_sel:
 
 st.sidebar.caption(
     "Fonte: Novo CAGED (MTE) · Camada Gold (`dbt` + `DuckDB`).\n\n"
+    "Período limitado às competências cobertas pelos arquivos MOV.\n\n"
     "Medianas calculadas sobre o grão individual (`fato_movimentacoes_ti`), "
     "pois mediana não é aditiva."
 )
@@ -203,7 +213,7 @@ aba_h1, aba_h2, aba_h3, aba_dq = st.tabs(
 with aba_h1:
     st.subheader("Mediana salarial: admitidos vs. desligados")
     st.caption(
-        "Gap negativo = quem entra ganha menos do que quem sai (substituição por mão de obra mais barata)."
+        "Gap negativo = mediana salarial de admissão inferior à de desligamento."
     )
     sal = consultar(
         f"""
@@ -236,8 +246,18 @@ with aba_h1:
         category_orders={"recorte_geografico": RECORTES, "nivel_carreira": NIVEIS},
         labels={"recorte_geografico": "", "nivel_carreira": "Nível"},
     )
-    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
-    fig.update_layout(legend={"orientation": "h", "y": 1.15, "x": 0}, separators=",.")
+    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1], y=1.02))
+    fig.update_layout(
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.12,
+            "xanchor": "left",
+            "x": 0,
+        },
+        margin={"t": 95},
+        separators=",.",
+    )
     st.plotly_chart(fig, use_container_width=True)
 
     sal["Gap Entrada vs. Saída (%)"] = (
@@ -437,7 +457,8 @@ with aba_dq:
     st.subheader("Degradação do código de 1º emprego pós-eSocial")
     st.caption(
         "Distribuição de `tipo_movimentacao_codigo` nas admissões ativas. "
-        "O código 10 (Primeiro Emprego) praticamente desaparece, justificando o uso da idade como proxy na H2."
+        "Se o código 10 (Primeiro Emprego) for irrelevante frente ao código 97 (tipo ignorado), "
+        "a variável está degradada e a idade passa a ser o proxy na H2."
     )
     tipos = consultar(
         f"""
@@ -478,8 +499,9 @@ with aba_dq:
             inteiro(jov["jovens"].sum()) if not jov.empty else "—",
         )
         st.info(
-            "Uma diferença dessa magnitude indica subnotificação estrutural da variável na origem, "
-            "não ausência real de primeiros empregos."
+            "A predominância do código 97 limita o uso dessa variável para identificar primeiros empregos. "
+            "Portanto, a idade é utilizada como indicador indireto de entrada no mercado, "
+            "sem equivaler necessariamente ao primeiro emprego."
         )
 
     st.divider()

@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 760" width="1800" height="760">
+  <defs>
+    <style>
+      .font { font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#64748B"/>
+    </marker>
+  </defs>
+  <rect width="1800" height="760" fill="#0B1220"/>
+  <text x="48" y="54" class="font" font-size="26" font-weight="700" fill="#F8FAFC">Arquitetura do Pipeline — Novo CAGED TI (Medallion · Modern Data Stack in a Box)</text>
+  <text x="48" y="86" class="font" font-size="15" fill="#94A3B8">Fluxo ELT local de ponta a ponta: FTP MTE (.7z) → Python → Bronze (Parquet ZSTD) → Silver &amp; Gold (dbt + DuckDB) → Streamlit</text>
+  <rect x="48" y="135" width="260" height="340" rx="12" fill="#111C2E" stroke="#24344D" stroke-width="1.5"/>
+  <rect x="48" y="135" width="260" height="7" rx="3.5" fill="#38BDF8"/>
+  <text x="68" y="173" class="font" font-size="12" font-weight="700" letter-spacing="1" fill="#38BDF8">01 · FONTE</text>
+  <text x="68" y="203" class="font" font-size="20" font-weight="700" fill="#F8FAFC">FTP Novo CAGED</text>
+  <rect x="68" y="219" width="220" height="28" rx="6" fill="#18263E" stroke="#2B3E5E" stroke-width="1"/>
+  <text x="78" y="238" class="font" font-size="13" font-weight="600" fill="#38BDF8">PDET / MTE (.7z)</text>
+  <line x1="68" y1="265" x2="288" y2="265" stroke="#24344D" stroke-width="1"/>
+  <circle cx="74" cy="292" r="3.5" fill="#38BDF8"/>
+  <text x="86" y="297" class="font" font-size="14" fill="#CBD5E1">Microdados brutos (.txt)</text>
+  <circle cx="74" cy="334" r="3.5" fill="#38BDF8"/>
+  <text x="86" y="339" class="font" font-size="14" fill="#CBD5E1">CAGEDMOV (no prazo)</text>
+  <circle cx="74" cy="376" r="3.5" fill="#38BDF8"/>
+  <text x="86" y="381" class="font" font-size="14" fill="#CBD5E1">CAGEDFOR (fora do prazo)</text>
+  <circle cx="74" cy="418" r="3.5" fill="#38BDF8"/>
+  <text x="86" y="423" class="font" font-size="14" fill="#CBD5E1">CAGEDEXC (exclusões)</text>
+  <line x1="311" y1="305" x2="331" y2="305" stroke="#64748B" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <rect x="336" y="135" width="260" height="340" rx="12" fill="#111C2E" stroke="#24344D" stroke-width="1.5"/>
+  <rect x="336" y="135" width="260" height="7" rx="3.5" fill="#6366F1"/>
+  <text x="356" y="173" class="font" font-size="12" font-weight="700" letter-spacing="1" fill="#6366F1">02 · INGESTÃO</text>
+  <text x="356" y="203" class="font" font-size="20" font-weight="700" fill="#F8FAFC">Extração Python</text>
+  <rect x="356" y="219" width="220" height="28" rx="6" fill="#18263E" stroke="#2B3E5E" stroke-width="1"/>
+  <text x="366" y="238" class="font" font-size="13" font-weight="600" fill="#6366F1">src/extract_ftp.py</text>
+  <line x1="356" y1="265" x2="576" y2="265" stroke="#24344D" stroke-width="1"/>
+  <circle cx="362" cy="292" r="3.5" fill="#6366F1"/>
+  <text x="374" y="297" class="font" font-size="14" fill="#CBD5E1">Download passivo + retry</text>
+  <circle cx="362" cy="334" r="3.5" fill="#6366F1"/>
+  <text x="374" y="339" class="font" font-size="14" fill="#CBD5E1">Extração em data/tmp (py7zr)</text>
+  <circle cx="362" cy="376" r="3.5" fill="#6366F1"/>
+  <text x="374" y="381" class="font" font-size="14" fill="#CBD5E1">Contrato de schema (.txt)</text>
+  <circle cx="362" cy="418" r="3.5" fill="#6366F1"/>
+  <text x="374" y="423" class="font" font-size="14" fill="#CBD5E1">Escrita atômica (.part)</text>
+  <line x1="599" y1="305" x2="619" y2="305" stroke="#64748B" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <rect x="624" y="135" width="260" height="340" rx="12" fill="#111C2E" stroke="#24344D" stroke-width="1.5"/>
+  <rect x="624" y="135" width="260" height="7" rx="3.5" fill="#F59E0B"/>
+  <text x="644" y="173" class="font" font-size="12" font-weight="700" letter-spacing="1" fill="#F59E0B">03 · BRONZE</text>
+  <text x="644" y="203" class="font" font-size="20" font-weight="700" fill="#F8FAFC">Data Lake Local</text>
+  <rect x="644" y="219" width="220" height="28" rx="6" fill="#18263E" stroke="#2B3E5E" stroke-width="1"/>
+  <text x="654" y="238" class="font" font-size="13" font-weight="600" fill="#F59E0B">Parquet · ZSTD</text>
+  <line x1="644" y1="265" x2="864" y2="265" stroke="#24344D" stroke-width="1"/>
+  <circle cx="650" cy="292" r="3.5" fill="#F59E0B"/>
+  <text x="662" y="297" class="font" font-size="14" fill="#CBD5E1">Partição Hive (competencia=)</text>
+  <circle cx="650" cy="334" r="3.5" fill="#F59E0B"/>
+  <text x="662" y="339" class="font" font-size="14" fill="#CBD5E1">Schema-on-read (all_varchar)</text>
+  <circle cx="650" cy="376" r="3.5" fill="#F59E0B"/>
+  <text x="662" y="381" class="font" font-size="14" fill="#CBD5E1">Metadados de linhagem</text>
+  <circle cx="650" cy="418" r="3.5" fill="#F59E0B"/>
+  <text x="662" y="423" class="font" font-size="14" fill="#CBD5E1">Idempotência por arquivo</text>
+  <line x1="887" y1="305" x2="907" y2="305" stroke="#64748B" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <rect x="912" y="135" width="260" height="340" rx="12" fill="#111C2E" stroke="#24344D" stroke-width="1.5"/>
+  <rect x="912" y="135" width="260" height="7" rx="3.5" fill="#A855F7"/>
+  <text x="932" y="173" class="font" font-size="12" font-weight="700" letter-spacing="1" fill="#A855F7">04 · SILVER</text>
+  <text x="932" y="203" class="font" font-size="20" font-weight="700" fill="#F8FAFC">Staging &amp; Limpeza</text>
+  <rect x="932" y="219" width="220" height="28" rx="6" fill="#18263E" stroke="#2B3E5E" stroke-width="1"/>
+  <text x="942" y="238" class="font" font-size="13" font-weight="600" fill="#A855F7">dbt Views · DuckDB</text>
+  <line x1="932" y1="265" x2="1152" y2="265" stroke="#24344D" stroke-width="1"/>
+  <circle cx="938" cy="292" r="3.5" fill="#A855F7"/>
+  <text x="950" y="297" class="font" font-size="14" fill="#CBD5E1">stg_caged_mov / for / exc</text>
+  <circle cx="938" cy="334" r="3.5" fill="#A855F7"/>
+  <text x="950" y="339" class="font" font-size="14" fill="#CBD5E1">Unificação de schema (28/30 col.)</text>
+  <circle cx="938" cy="376" r="3.5" fill="#A855F7"/>
+  <text x="950" y="381" class="font" font-size="14" fill="#CBD5E1">Regra EXC (saldo * -1)</text>
+  <circle cx="938" cy="418" r="3.5" fill="#A855F7"/>
+  <text x="950" y="423" class="font" font-size="14" fill="#CBD5E1">Saneamento salario_valido</text>
+  <line x1="1175" y1="305" x2="1195" y2="305" stroke="#64748B" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <rect x="1200" y="135" width="260" height="340" rx="12" fill="#111C2E" stroke="#24344D" stroke-width="1.5"/>
+  <rect x="1200" y="135" width="260" height="7" rx="3.5" fill="#10B981"/>
+  <text x="1220" y="173" class="font" font-size="12" font-weight="700" letter-spacing="1" fill="#10B981">05 · GOLD</text>
+  <text x="1220" y="203" class="font" font-size="20" font-weight="700" fill="#F8FAFC">Marts Dimensionais</text>
+  <rect x="1220" y="219" width="220" height="28" rx="6" fill="#18263E" stroke="#2B3E5E" stroke-width="1"/>
+  <text x="1230" y="238" class="font" font-size="13" font-weight="600" fill="#10B981">dbt Tables · DuckDB</text>
+  <line x1="1220" y1="265" x2="1440" y2="265" stroke="#24344D" stroke-width="1"/>
+  <circle cx="1226" cy="292" r="3.5" fill="#10B981"/>
+  <text x="1238" y="297" class="font" font-size="14" fill="#CBD5E1">dim_cbo (seed CBO 2002 TI)</text>
+  <circle cx="1226" cy="334" r="3.5" fill="#10B981"/>
+  <text x="1238" y="339" class="font" font-size="14" fill="#CBD5E1">fato_movimentacoes_ti</text>
+  <circle cx="1226" cy="376" r="3.5" fill="#10B981"/>
+  <text x="1238" y="381" class="font" font-size="14" fill="#CBD5E1">agg_caged_ti_mensal</text>
+  <circle cx="1226" cy="418" r="3.5" fill="#10B981"/>
+  <text x="1238" y="423" class="font" font-size="14" fill="#CBD5E1">Medianas no grão individual</text>
+  <line x1="1463" y1="305" x2="1483" y2="305" stroke="#64748B" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <rect x="1488" y="135" width="260" height="340" rx="12" fill="#111C2E" stroke="#24344D" stroke-width="1.5"/>
+  <rect x="1488" y="135" width="260" height="7" rx="3.5" fill="#EC4899"/>
+  <text x="1508" y="173" class="font" font-size="12" font-weight="700" letter-spacing="1" fill="#EC4899">06 · DATA SERVING</text>
+  <text x="1508" y="203" class="font" font-size="20" font-weight="700" fill="#F8FAFC">Analytics &amp; BI</text>
+  <rect x="1508" y="219" width="220" height="28" rx="6" fill="#18263E" stroke="#2B3E5E" stroke-width="1"/>
+  <text x="1518" y="238" class="font" font-size="13" font-weight="600" fill="#EC4899">Streamlit · Plotly</text>
+  <line x1="1508" y1="265" x2="1728" y2="265" stroke="#24344D" stroke-width="1"/>
+  <circle cx="1514" cy="292" r="3.5" fill="#EC4899"/>
+  <text x="1526" y="297" class="font" font-size="14" fill="#CBD5E1">src/app.py (read_only=True)</text>
+  <circle cx="1514" cy="334" r="3.5" fill="#EC4899"/>
+  <text x="1526" y="339" class="font" font-size="14" fill="#CBD5E1">src/metricas.py (CLI / README)</text>
+  <circle cx="1514" cy="376" r="3.5" fill="#EC4899"/>
+  <text x="1526" y="381" class="font" font-size="14" fill="#CBD5E1">Consulta híbrida (Agg + Fato)</text>
+  <circle cx="1514" cy="418" r="3.5" fill="#EC4899"/>
+  <text x="1526" y="423" class="font" font-size="14" fill="#CBD5E1">Hipóteses H1, H2, H3 e DQ</text>
+  <rect x="48" y="515" width="1704" height="200" rx="12" fill="#111C2E" stroke="#24344D" stroke-width="1.5"/>
+  <text x="72" y="551" class="font" font-size="14" font-weight="700" letter-spacing="1" fill="#94A3B8">GOVERNANÇA, QUALIDADE DE DADOS &amp; CI/CD TRANSVERSAL</text>
+  <rect x="72" y="569" width="536" height="124" rx="9" fill="#0E1726" stroke="#24344D" stroke-width="1.2"/>
+  <rect x="72" y="569" width="5" height="124" rx="2.5" fill="#10B981"/>
+  <text x="92" y="603" class="font" font-size="16" font-weight="700" fill="#F8FAFC">Qualidade de Dados (dbt test · 22 testes)</text>
+  <text x="92" y="637" class="font" font-size="13.5" fill="#CBD5E1">not_null, unique, relationships, accepted_values e grão único</text>
+  <text x="92" y="663" class="font" font-size="13.5" fill="#CBD5E1">Reconciliação granular (FULL OUTER JOIN) e regras de exclusão/saldo</text>
+  <rect x="632" y="569" width="536" height="124" rx="9" fill="#0E1726" stroke="#24344D" stroke-width="1.2"/>
+  <rect x="632" y="569" width="5" height="124" rx="2.5" fill="#38BDF8"/>
+  <text x="652" y="603" class="font" font-size="16" font-weight="700" fill="#F8FAFC">Testes Automatizados (pytest · 42 testes)</text>
+  <text x="652" y="637" class="font" font-size="13.5" fill="#CBD5E1">Bronze sintética (MOV/FOR/EXC) e dbt build isolado em DuckDB</text>
+  <text x="652" y="663" class="font" font-size="13.5" fill="#CBD5E1">Fronteiras salariais, mediana sem NULL, escrita atômica e schema</text>
+  <rect x="1192" y="569" width="536" height="124" rx="9" fill="#0E1726" stroke="#24344D" stroke-width="1.2"/>
+  <rect x="1192" y="569" width="5" height="124" rx="2.5" fill="#F59E0B"/>
+  <text x="1212" y="603" class="font" font-size="16" font-weight="700" fill="#F8FAFC">Integração Contínua (GitHub Actions CI)</text>
+  <text x="1212" y="637" class="font" font-size="13.5" fill="#CBD5E1">Linting (ruff check src/ tests/) e execução da suíte pytest</text>
+  <text x="1212" y="663" class="font" font-size="13.5" fill="#CBD5E1">Validação do projeto dbt (dbt parse + dbt seed) a cada push/PR</text>
+</svg>
