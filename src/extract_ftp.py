@@ -87,9 +87,38 @@ def validar_competencia(competencia: str) -> str:
 
 def conectar() -> FTP:
     ftp = FTP(FTP_HOST, encoding="utf-8", timeout=120)
-    ftp.login()  # login anônimo
-    ftp.set_pasv(True)
+    try:
+        ftp.login()  # login anônimo
+        ftp.set_pasv(True)
+    except BaseException:
+        with contextlib.suppress(Error, OSError):
+            ftp.close()
+        raise
     return ftp
+
+
+def conectar_com_retry() -> FTP:
+    """Estabelece a conexão FTP inicial com até MAX_TENTATIVAS e backoff progressivo."""
+    for tentativa in range(1, MAX_TENTATIVAS + 1):
+        try:
+            return conectar()
+        except error_perm:
+            raise
+        except (Error, OSError, EOFError) as e:
+            log.warning(
+                "Falha (%s/%s) ao conectar em %s: %s",
+                tentativa,
+                MAX_TENTATIVAS,
+                FTP_HOST,
+                e,
+            )
+            if tentativa == MAX_TENTATIVAS:
+                e.add_note(
+                    f"Esgotadas {MAX_TENTATIVAS} tentativas de conexão inicial a {FTP_HOST}"
+                )
+                raise
+            time.sleep(5 * tentativa)
+    raise RuntimeError("Fluxo inesperado em conectar_com_retry")
 
 
 def listar_competencias(ftp: FTP, ano: str) -> list[str]:
@@ -125,13 +154,19 @@ def baixar(ftp: FTP, competencia: str, nome: str, destino: Path) -> bool:
     else:
         log.info("Baixando %s...", nome)
 
-    with destino.open("wb") as f:
-        ftp.retrbinary(f"RETR {nome}", f.write, blocksize=1024 * 1024)
+    parcial = destino.with_suffix(destino.suffix + ".part")
+    try:
+        with parcial.open("wb") as f:
+            ftp.retrbinary(f"RETR {nome}", f.write, blocksize=1024 * 1024)
 
-    if tamanho and destino.stat().st_size != tamanho:
-        raise OSError(
-            f"Download incompleto de {nome}: esperado {tamanho}, obtido {destino.stat().st_size}"
-        )
+        if tamanho and parcial.stat().st_size != tamanho:
+            raise OSError(
+                f"Download incompleto de {nome}: esperado {tamanho}, obtido {parcial.stat().st_size}"
+            )
+        parcial.replace(destino)
+    except BaseException:
+        parcial.unlink(missing_ok=True)
+        raise
     return True
 
 
@@ -193,7 +228,7 @@ def txt_para_parquet(txt: Path, saida: Path, competencia: str, tipo: str) -> Non
         raise
 
 
-def processar(ftp: FTP, competencia: str, tipo: str, force: bool) -> FTP:
+def processar(ftp: FTP | None, competencia: str, tipo: str, force: bool) -> FTP | None:
     nome = f"CAGED{tipo}{competencia}.7z"
     saida = (
         BRONZE_DIR
@@ -212,19 +247,27 @@ def processar(ftp: FTP, competencia: str, tipo: str, force: bool) -> FTP:
         arquivo_7z = tmp / nome
         for tentativa in range(1, MAX_TENTATIVAS + 1):
             try:
+                if ftp is None:
+                    ftp = conectar()
                 if not baixar(ftp, competencia, nome, arquivo_7z):
                     return ftp
                 break
-            except Exception as e:
+            except error_perm:
+                raise
+            except (Error, OSError, EOFError) as e:
                 log.warning(
                     "Falha (%s/%s) em %s: %s", tentativa, MAX_TENTATIVAS, nome, e
                 )
+                if ftp is not None:
+                    with contextlib.suppress(Error, OSError):
+                        ftp.close()
+                    ftp = None
                 if tentativa == MAX_TENTATIVAS:
+                    e.add_note(
+                        f"Esgotadas {MAX_TENTATIVAS} tentativas para {nome} ({competencia})"
+                    )
                     raise
                 time.sleep(5 * tentativa)
-                with contextlib.suppress(Error, OSError):
-                    ftp.close()
-                ftp = conectar()
 
         log.info("Extraindo %s...", nome)
         with py7zr.SevenZipFile(arquivo_7z, "r") as z:
@@ -268,17 +311,19 @@ def main() -> None:
     except ValueError as e:
         parser.error(str(e))
 
-    ftp = conectar()
+    ftp = conectar_com_retry()
     try:
         competencias = args.competencia or listar_competencias(ftp, args.ano)
         for comp in competencias:
             for tipo in args.tipos:
                 ftp = processar(ftp, comp, tipo, args.force)
     finally:
-        try:
-            ftp.quit()
-        except (Error, OSError):
-            ftp.close()
+        if ftp is not None:
+            try:
+                ftp.quit()
+            except (Error, OSError):
+                with contextlib.suppress(Error, OSError):
+                    ftp.close()
     log.info("Pipeline de ingestão Bronze concluído com sucesso.")
 
 

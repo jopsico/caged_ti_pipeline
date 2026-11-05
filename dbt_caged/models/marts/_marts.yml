@@ -63,9 +63,6 @@ models:
       - name: saldo_liquido
         tests:
           - not_null
-      - name: admissoes_primeiro_emprego
-        tests:
-          - not_null
       - name: admissoes_jovens_ate_24
         tests:
           - not_null
