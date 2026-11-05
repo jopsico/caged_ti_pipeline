@@ -46,7 +46,7 @@ FTP MTE (.7z) ──► data/tmp (.txt) ──► Bronze (Parquet ZSTD) ──�
 | **Ingestão & Bronze** | Python (`ftplib`, `py7zr`, `duckdb`) | `data/bronze/caged_<tipo>/competencia=<AAAAMM>/data.parquet` | Download idempotente em modo passivo, descompactação em diretório temporário (`data/tmp`), leitura *schema-on-read* (`all_varchar=True`, UTF-8), adição de metadados de linhagem e escrita atômica em Parquet (ZSTD). |
 | **Silver (Staging)** | dbt + DuckDB | Schema `silver` (`data/caged.duckdb`) | Padronização de nomenclatura (snake_case sem acentos), unificação de schemas divergentes (MOV/FOR vs. EXC), tipagem explícita, tratamento de outliers salariais e inversão de sinal de exclusões. |
 | **Gold (Marts)** | dbt + DuckDB | Schema `gold` (`data/caged.duckdb`) | Modelagem dimensional (Tabelas Fato e Dimensões), filtro de domínio via seed oficial da CBO 2002 e agregações (contagens, saldo e medianas salariais) no grão **Competência × Recorte Geográfico (Ceará / Resto do Nordeste / Resto do Brasil) × Nível de Carreira (Gestão / Superior-Analista / Técnico)**. |
-| **Data Serving / BI** | Streamlit + Plotly | Leitura *read-only* (`data/caged.duckdb`) | Dashboard interativo ([`src/app.py`](src/app.py)) que consome as tabelas do schema `gold` em modo `read_only=True`, permitindo visualização sem risco de *lock* de escrita no banco. |
+| **Data Serving / BI** | Streamlit + Plotly | Leitura *read-only* (`data/caged.duckdb`) | Dashboard interativo ([`src/app.py`](src/app.py)) que consome as tabelas do schema `gold` em modo `read_only=True`, impedindo alterações no banco durante a visualização. |
 
 ---
 
@@ -90,7 +90,7 @@ A janela analisada é definida pelos dados, e não por constante: vai da menor �
 
 ## Modelagem Dimensional e Testes de Qualidade (dbt)
 
-Objetos materializados no banco `data/caged.duckdb` e testes de qualidade executados via `dbt test` / `dbt build` (**22 testes de dados**, incluindo os testes singulares de grão, reconciliação e regras de exclusão, todos passando na camada Gold local):
+Objetos materializados no banco `data/caged.duckdb` e testes de qualidade executados via `dbt test` / `dbt build` (**21 testes de dados**, incluindo os testes singulares de grão, reconciliação e regras de exclusão, todos passando na camada Gold local):
 
 | Objeto | Materialização | Descrição | Testes de Qualidade |
 | :--- | :---: | :--- | :--- |
@@ -99,11 +99,11 @@ Objetos materializados no banco `data/caged.duckdb` e testes de qualidade execut
 | `silver.stg_caged_exc` | View | Leitura dos Parquets da Bronze (EXC), tipagem, limpeza e inversão de sinal. | — |
 | `gold.dim_cbo` | Table | 25 ocupações de TI classificadas em 3 níveis de carreira (seed CBO 2002). | `unique` em `cbo_ocupacao`; `not_null` em `cbo_ocupacao`, `nome_ocupacao` e `familia_cbo` |
 | `gold.fato_movimentacoes_ti` | Table | Movimentações consolidadas (MOV + FOR + EXC) no grão individual. | `not_null` em `cbo_ocupacao`, `competencia_mov`, `uf_codigo` e `saldo_ajustado`; `relationships` (`cbo_ocupacao` → `dim_cbo`); `accepted_values` `[-1, 1]` em `saldo_ajustado` |
-| `gold.agg_caged_ti_mensal` | Table | Mart pré-agregado mensal (Competência × Recorte × Carreira) para consumo no Streamlit. | `not_null` nas chaves (`competencia_mov`, `recorte_geografico`, `nivel_carreira`) e nas métricas aditivas (`total_admissoes`, `total_desligamentos`, `saldo_liquido`, `admissoes_primeiro_emprego`, `admissoes_jovens_ate_24`); `accepted_values` em `recorte_geografico` |
+| `gold.agg_caged_ti_mensal` | Table | Mart pré-agregado mensal (Competência × Recorte × Carreira) para consumo no Streamlit. | `not_null` nas chaves (`competencia_mov`, `recorte_geografico`, `nivel_carreira`) e nas métricas aditivas (`total_admissoes`, `total_desligamentos`, `saldo_liquido`, `admissoes_jovens_ate_24`); `accepted_values` em `recorte_geografico` |
 | `assert_agg_unique_grain` | Teste singular | Garante uma única linha por (`competencia_mov`, `recorte_geografico`, `nivel_carreira`) no agregado. | Falha se retornar qualquer linha |
 | `assert_reconciliacao_saldo_fato_vs_agg` | Teste singular | Reconcilia fato × agregado **por grupo** (`competencia_mov`, `recorte_geografico`, `nivel_carreira`) via `FULL OUTER JOIN` + `IS DISTINCT FROM` em saldo, admissões, desligamentos e jovens ≤ 24. | Falha em qualquer divergência, inclusive compensada entre grupos, ou grupo ausente |
 | `assert_regras_exclusao_e_saldo` | Teste singular | Invariantes da regra contábil: exclusão nunca conta como admissão/desligamento ativo; `saldo_ajustado` só inverte o sinal em exclusões; todo registro não excluído é exatamente uma admissão ativa ou um desligamento ativo. | Falha se retornar qualquer linha |
-| `tests/test_pipeline.py` | Suíte `pytest` | Gera Bronze sintética (MOV/FOR/EXC) e executa `dbt build` isolado. Valida inversão de sinal de exclusões (admissão e desligamento), fronteiras salariais (700,00 / 100.000,00 / 699,99), outlier, ausência de deduplicação, mediana ignorando `NULL`, classificação geográfica e reconciliação granular (inclusive detecção de divergências). Verifica ainda a janela de análise, o volume por critério, a reconciliação do consolidado com a fato por grupo, medianas contra cálculo independente e a fórmula do gap (`src/metricas.py`). Em `extract_ftp.py`: escrita atômica sem resíduo `.part`, validação de schema, validação de competência e arquivo ausente no FTP. | 42 testes; executados no CI (`python -m pytest -q`) |
+| `tests/test_pipeline.py` | Suíte `pytest` | Gera Bronze sintética (MOV/FOR/EXC) e executa `dbt build` isolado. Valida inversão de sinal de exclusões (admissão e desligamento), fronteiras salariais (700,00 / 100.000,00 / 699,99), outlier, ausência de deduplicação, mediana ignorando `NULL`, classificação geográfica, ausência de colunas obsoletas e reconciliação granular (inclusive detecção de divergências). Verifica ainda a janela de análise, o volume por critério, a reconciliação do consolidado com a fato por grupo, medianas contra cálculo independente, fórmula do gap (`gap_percentual` com `None`/`NaN`/`inf`), contagens mensais da H1 (`gaps_mensais_h1`), distribuição de códigos da H2 (`tipos_movimentacao`), diferenciais regionais da H3 (`diferencial_regional_h3`) e renderização do Streamlit sob filtros estreitos sem `+nan%`. Em `extract_ftp.py`: escrita atômica sem resíduo `.part` (preservando destino preexistente), validação de schema, validação de competência, arquivo ausente no FTP e resiliência de retry/reconexão (conexão inicial e download). | 71 testes; executados no CI (`python -m pytest -q`) |
 
 ---
 
@@ -141,7 +141,7 @@ O mercado formal de TI no Ceará posiciona-se acima do **Resto do Nordeste** em 
 
 ## Resultados e Conclusões Analíticas (01/2025 a 08/2026)
 
-> Os números desta seção são gerados diretamente da camada Gold por `python src/metricas.py` (`make metricas`), a mesma definição usada pelo dashboard. Em caso de nova extração, regenere-os em vez de editar valores manualmente.
+> Os números desta seção (volume processado, consolidado por recorte e carreira, frequência mensal de gaps da H1, distribuição de códigos de movimentação da H2 e diferenciais salariais regionais da H3) são gerados diretamente da camada Gold por `python src/metricas.py` (`make metricas`), utilizando as mesmas definições do dashboard. Em caso de nova extração, regenere-os em vez de editar valores manualmente.
 
 **Período analisado:** 01/2025 a 08/2026 (competência da movimentação)
 
@@ -201,11 +201,11 @@ O dashboard em Streamlit ([`src/app.py`](src/app.py)) consome diretamente o mart
 ### Veredito das Hipóteses
 
 1. **H1 (Substituição e Barateamento da Mão de Obra) — EVIDÊNCIA PARCIALMENTE CONSISTENTE COM A HIPÓTESE:**
-   - **Técnico:** a mediana de admissão é inferior à de desligamento nos três recortes (**Ceará -4,5%**, **Resto do Nordeste -3,8%**, **Resto do Brasil -7,1%**), com gap negativo na maioria das 20 competências (12, 17 e 19, respectivamente).
+   - **Técnico:** a mediana de admissão é inferior à de desligamento nos três recortes (**Ceará -4,5%**, **Resto do Nordeste -3,8%**, **Resto do Brasil -7,1%**), com gap negativo na maioria das 20 competências válidas da janela (12 de 20, 17 de 20 e 19 de 20, respectivamente).
    - **Superior / Analista:** o deságio aparece no **Resto do Nordeste (-9,9%**, de R$ 3.995,60 nos desligados para R$ 3.600,00 nos admitidos) e no **Resto do Brasil (-3,1%)**. No **Ceará** as medianas são praticamente iguais (**+0,1%**: R$ 4.120,46 vs. R$ 4.116,81), e esse grupo **não** sustenta a hipótese de barateamento.
    - **Gestão (`CBO 1425`) — indicador observado:** o saldo líquido é negativo em todos os recortes (**-7.319 no Resto do Brasil**, **-321 no Resto do Nordeste** e **-91 no Ceará**), e a mediana de admissão supera a de desligamento no Ceará (**+8,7%**) e no Resto do Nordeste (**+10,6%**), enquanto no Resto do Brasil ela é inferior (**-3,0%**).
    - **Gestão — hipótese explicativa (não demonstrada diretamente):** uma possibilidade plausível é o enxugamento de cargos intermediários com contratações pontuais em faixas superiores. Os microdados não trazem senioridade individual, então essa leitura exige controle adicional para ser confirmada e não deve ser tratada como fato.
-   - **Critério de refutação:** o gap é negativo na maioria das competências em 7 dos 9 grupos; as exceções são Gestão no Ceará (9 de 20 competências) e Gestão no Resto do Nordeste (7 de 20).
+   - **Critério de refutação (contagem mensal reproduzida por `metricas.gaps_mensais_h1`):** calculando as medianas de admissão e desligamento por competência diretamente no grão individual (denominador = `competencias_validas`, isto é, competências com par válido de medianas; meses sem par válido ficam como `Indefinido` e não entram como negativos), o gap é negativo na maioria das competências em **7 dos 9 grupos** — Técnico (12 de 20 no Ceará, 17 de 20 no Resto do Nordeste e 19 de 20 no Resto do Brasil), Superior / Analista (11 de 20 no Ceará, 16 de 20 no Resto do Nordeste e 14 de 20 no Resto do Brasil) e Gestão no Resto do Brasil (12 de 20 negativas, 2 de 20 com gap zero e 6 de 20 positivas). As exceções são Gestão no Ceará (9 de 20) e Gestão no Resto do Nordeste (7 de 20).
    - **Nota metodológica:** os microdados mostram um deságio salarial líquido entre o fluxo de entrada e o de saída nos mesmos grupos ocupacionais. Por serem dados anonimizados, sem identificador de empresa ou indivíduo, eles não medem substituição direta 1-para-1 no mesmo CNPJ, e a associação não é causal sem controle de variáveis adicionais (porte da empresa, senioridade, inflação e composição dos cargos).
 
 2. **H2 (Porta de Entrada e Primeiro Emprego) — EVIDÊNCIA CONSISTENTE COM A HIPÓTESE (+ ACHADO TÉCNICO DE DATA QUALITY):**
@@ -317,7 +317,7 @@ make pipeline COMP=202601 # extract + build
 ```
 
 > [!WARNING]
-> **Nota sobre Concorrência no DuckDB:** o DuckDB é um banco *in-process* em arquivo único (`data/caged.duckdb`). Conexões de escrita (`dbt build`) exigem que clientes externos conectados em modo de escrita (ex.: DBeaver) estejam **desconectados**, caso contrário ocorre erro de *lock*. O [`src/app.py`](src/app.py) já opera com `read_only=True`.
+> **Nota sobre Concorrência no DuckDB:** o dashboard ([`src/app.py`](src/app.py)) utiliza conexões DuckDB em modo `read_only=True`, impedindo alterações no banco durante a visualização. Entretanto, como o DuckDB utiliza um arquivo local único (`data/caged.duckdb`), processos distintos de leitura e escrita (como o Streamlit, o `dbt build` ou clientes SQL externos como DBeaver) podem apresentar conflitos de acesso (*lock*) se acessarem o arquivo simultaneamente. Recomenda-se executar as transformações `dbt` separadamente das consultas ao dashboard.
 
 ---
 

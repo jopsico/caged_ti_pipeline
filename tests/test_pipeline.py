@@ -10,12 +10,14 @@ import statistics
 import subprocess
 import sys
 from datetime import datetime
+from decimal import Decimal
 from ftplib import error_perm
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import duckdb
 import pandas as pd
+import py7zr
 import pytest
 
 import extract_ftp
@@ -474,11 +476,21 @@ def test_gap_do_consolidado_segue_a_formula(gold_db: Path) -> None:
     [
         (90.0, 100.0, -10.0),
         (110.0, 100.0, 10.0),
+        (Decimal("4500.00"), Decimal("4000.00"), 12.5),
         (100.0, 100.0, 0.0),
         (100.0, 0.0, None),
+        (0.0, 0.0, None),
         (None, 100.0, None),
         (100.0, None, None),
+        (None, None, None),
         (float("nan"), 100.0, None),
+        (100.0, float("nan"), None),
+        (float("nan"), float("nan"), None),
+        (float("inf"), 100.0, None),
+        (100.0, float("inf"), None),
+        (float("-inf"), 100.0, None),
+        (100.0, float("-inf"), None),
+        (float("inf"), float("inf"), None),
     ],
 )
 def test_gap_percentual(
@@ -486,6 +498,33 @@ def test_gap_percentual(
 ) -> None:
     resultado = metricas.gap_percentual(entrada, saida)
     assert resultado == (pytest.approx(esperado) if esperado is not None else None)
+
+
+def test_dashboard_filtro_sem_desligamento_nao_exibe_nan(gold_db: Path) -> None:
+    """Reproduz o filtro Ceará + Gestão em competência única sem desligamentos ativos."""
+    from streamlit.testing.v1 import AppTest
+
+    codigo = (ROOT / "src" / "app.py").read_text(encoding="utf-8")
+    codigo = codigo.replace(
+        'Path(__file__).resolve().parents[1] / "data" / "caged.duckdb"',
+        f"Path({gold_db.as_posix()!r})",
+    )
+    at = AppTest.from_string(codigo, default_timeout=60).run()
+    assert not at.exception
+
+    # Filtra Ceará + Gestão (1 admissão de R$ 5.000,00 e 0 desligamentos -> med_saiu nula)
+    at.sidebar.multiselect[0].set_value(["Ceará"])
+    at.sidebar.multiselect[1].set_value(["Gestão"])
+    at.run()
+
+    assert not at.exception
+    metricas_ui = {m.label: (m.value, m.delta) for m in at.metric}
+    assert metricas_ui["Mediana Admitidos"] == ("R$ 5.000,00", "")
+    assert metricas_ui["Mediana Desligados"] == ("—", "")
+    for valor, delta in metricas_ui.values():
+        texto = f"{valor} {delta or ''}".lower()
+        assert "nan" not in texto
+        assert "inf" not in texto
 
 
 def test_markdown_de_metricas_usa_periodo_e_nomenclatura_precisa(gold_db: Path) -> None:
@@ -498,8 +537,97 @@ def test_markdown_de_metricas_usa_periodo_e_nomenclatura_precisa(gold_db: Path) 
         "Admissões ativas",
         "Desligamentos ativos",
         "Registros de exclusão",
+        "H1 — Frequência Mensal de Gaps Salariais por Competência",
+        "H2 — Distribuição de `tipomovimentação` nas Admissões Ativas",
+        "H3 — Diferencial Salarial Regional na Mediana de Admissão",
     ):
         assert rotulo in texto
+
+
+def test_colunas_obsoletas_de_primeiro_emprego_foram_removidas(gold_db: Path) -> None:
+    colunas_fato = {
+        r[0]
+        for r in _consulta(
+            gold_db,
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'gold' AND table_name = 'fato_movimentacoes_ti'",
+        )
+    }
+    colunas_agg = {
+        r[0]
+        for r in _consulta(
+            gold_db,
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'gold' AND table_name = 'agg_caged_ti_mensal'",
+        )
+    }
+    assert "is_primeiro_emprego" not in colunas_fato
+    assert "admissoes_primeiro_emprego" not in colunas_agg
+    assert {
+        "tipo_movimentacao_codigo",
+        "is_admissao_ativa",
+        "is_desligamento_ativo",
+        "indicador_exclusao",
+        "saldo_ajustado",
+    }.issubset(colunas_fato)
+    assert {"admissoes_jovens_ate_24", "pct_admissoes_jovens_ate_24"}.issubset(
+        colunas_agg
+    )
+
+
+def test_gaps_mensais_h1_classifica_indefinidos_sem_contar_como_negativos(
+    gold_db: Path,
+) -> None:
+    con, (ini, fim) = _janela_e_con(gold_db)
+    with con:
+        h1 = metricas.gaps_mensais_h1(con, ini, fim)
+        texto = metricas.para_markdown(con, ini, fim)
+    assert len(h1) == 9
+    for r in h1.itertuples():
+        assert r.competencias_validas == r.gap_negativo + r.gap_zero + r.gap_positivo
+        assert r.competencias_janela == r.competencias_validas + r.gap_indefinido
+
+    # Ceará + Gestão tem apenas 1 admissão e 0 desligamentos em 202501 -> gap indefinido (nunca negativo)
+    ce_gestao = h1[
+        (h1["recorte_geografico"] == "Ceará") & (h1["nivel_carreira"] == "Gestão")
+    ].iloc[0]
+    assert int(ce_gestao["competencias_janela"]) == 1
+    assert int(ce_gestao["competencias_validas"]) == 0
+    assert int(ce_gestao["gap_indefinido"]) == 1
+    assert int(ce_gestao["gap_negativo"]) == 0
+    assert "0 de 0 válidos (1 na janela)" in texto
+
+
+def test_tipos_movimentacao_inclui_codigos_de_referencia_10_20_35_97(
+    gold_db: Path,
+) -> None:
+    con, (ini, fim) = _janela_e_con(gold_db)
+    with con:
+        tipos = metricas.tipos_movimentacao(con, ini, fim)
+        vol = metricas.volume(con, ini, fim)
+    assert {10, 20, 35, 97}.issubset(set(tipos["codigo"]))
+    assert int(tipos["admissoes"].sum()) == vol["admissoes_ativas"]
+    assert float(tipos["pct"].sum()) == pytest.approx(100.0)
+
+
+def test_diferencial_regional_h3_segue_gap_percentual(gold_db: Path) -> None:
+    con, (ini, fim) = _janela_e_con(gold_db)
+    with con:
+        h3 = metricas.diferencial_regional_h3(con, ini, fim)
+    assert list(h3["nivel_carreira"]) == metricas.NIVEIS
+    for r in h3.itertuples():
+        esperado_ne = metricas.gap_percentual(r.med_ceara, r.med_resto_ne)
+        esperado_br = metricas.gap_percentual(r.med_ceara, r.med_resto_br)
+        assert (
+            (r.gap_ce_vs_ne_pct is None or math.isnan(r.gap_ce_vs_ne_pct))
+            if esperado_ne is None
+            else r.gap_ce_vs_ne_pct == pytest.approx(esperado_ne)
+        )
+        assert (
+            (r.gap_ce_vs_br_pct is None or math.isnan(r.gap_ce_vs_br_pct))
+            if esperado_br is None
+            else r.gap_ce_vs_br_pct == pytest.approx(esperado_br)
+        )
 
 
 # ------------------------------------------------------------------ extract_ftp.py
@@ -672,3 +800,354 @@ def test_processar_e_idempotente(bronze_isolada: Path) -> None:
     ftp.nlst.assert_not_called()
     ftp.retrbinary.assert_not_called()
     assert saida.read_bytes() == b"ja-existe"
+
+
+def _gerar_7z_em(destino: Path, pasta_aux: Path) -> None:
+    txt = _txt_valido(pasta_aux / "CAGEDMOV202501.txt")
+    with py7zr.SevenZipFile(destino, "w") as z:
+        z.write(txt, txt.name)
+
+
+def test_retry_ftp_cenario_a_falha_inicial_e_recuperacao(
+    bronze_isolada: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cenário A: 1ª tentativa falha no download; 2ª reconecta e conclui."""
+    ftp_1 = MagicMock(name="ftp_1")
+    ftp_2 = MagicMock(name="ftp_2")
+    pausas: list[int] = []
+    chamadas_baixar = 0
+
+    def baixar_falso(ftp: object, _comp: str, _nome: str, destino: Path) -> bool:
+        nonlocal chamadas_baixar
+        chamadas_baixar += 1
+        if chamadas_baixar == 1:
+            assert ftp is ftp_1
+            raise OSError("queda de rede na 1ª tentativa")
+        assert ftp is ftp_2
+        _gerar_7z_em(destino, tmp_path)
+        return True
+
+    monkeypatch.setattr(extract_ftp, "baixar", baixar_falso)
+    monkeypatch.setattr(extract_ftp, "conectar", lambda: ftp_2)
+    monkeypatch.setattr(extract_ftp.time, "sleep", pausas.append)
+
+    retorno = extract_ftp.processar(ftp_1, "202501", "MOV", force=False)
+
+    assert retorno is ftp_2
+    ftp_1.close.assert_called_once()
+    assert pausas == [5]
+    saida = extract_ftp.BRONZE_DIR / "caged_mov" / "competencia=202501" / "data.parquet"
+    assert saida.exists()
+
+
+def test_retry_ftp_cenario_b_reconexao_falha_e_terceira_funciona(
+    bronze_isolada: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cenário B: 1ª falha no download; 2ª falha ao reconectar; 3ª reconecta e conclui."""
+    ftp_1 = MagicMock(name="ftp_1")
+    ftp_3 = MagicMock(name="ftp_3")
+    pausas: list[int] = []
+    tentativas_conexao = 0
+
+    def conectar_falso() -> MagicMock:
+        nonlocal tentativas_conexao
+        tentativas_conexao += 1
+        if tentativas_conexao == 1:
+            raise OSError("servidor FTP indisponível na reconexão")
+        return ftp_3
+
+    def baixar_falso(ftp: object, _comp: str, _nome: str, destino: Path) -> bool:
+        if ftp is ftp_1:
+            raise OSError("queda no download inicial")
+        assert ftp is ftp_3
+        _gerar_7z_em(destino, tmp_path)
+        return True
+
+    monkeypatch.setattr(extract_ftp, "conectar", conectar_falso)
+    monkeypatch.setattr(extract_ftp, "baixar", baixar_falso)
+    monkeypatch.setattr(extract_ftp.time, "sleep", pausas.append)
+
+    retorno = extract_ftp.processar(ftp_1, "202501", "MOV", force=False)
+
+    assert retorno is ftp_3
+    assert tentativas_conexao == 2
+    ftp_1.close.assert_called_once()
+    assert pausas == [5, 10]
+    saida = extract_ftp.BRONZE_DIR / "caged_mov" / "competencia=202501" / "data.parquet"
+    assert saida.exists()
+
+
+def test_retry_ftp_cenario_c_tres_falhas_consecutivas_propaga_erro(
+    bronze_isolada: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cenário C: 3 falhas consecutivas encerram na 3ª tentativa e propagam o erro."""
+    ftp_1 = MagicMock(name="ftp_1")
+    ftp_2 = MagicMock(name="ftp_2")
+    pausas: list[int] = []
+    conexoes = iter([ftp_2, OSError("reconexão falhou na 3ª tentativa")])
+
+    def conectar_falso() -> MagicMock:
+        item = next(conexoes)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def baixar_sempre_falha(_ftp: object, _c: str, _n: str, _d: Path) -> bool:
+        raise OSError("timeout durante RETR")
+
+    monkeypatch.setattr(extract_ftp, "conectar", conectar_falso)
+    monkeypatch.setattr(extract_ftp, "baixar", baixar_sempre_falha)
+    monkeypatch.setattr(extract_ftp.time, "sleep", pausas.append)
+
+    with pytest.raises(OSError, match="reconexão falhou na 3ª tentativa") as exc_info:
+        extract_ftp.processar(ftp_1, "202501", "MOV", force=False)
+
+    assert any("Esgotadas 3 tentativas" in n for n in exc_info.value.__notes__)
+    ftp_1.close.assert_called_once()
+    ftp_2.close.assert_called_once()
+    assert pausas == [5, 10]
+    assert not any(extract_ftp.BRONZE_DIR.rglob("*.parquet*"))
+    assert list(extract_ftp.TMP_DIR.iterdir()) == []
+
+
+def test_retry_ftp_cenario_d_limpeza_de_part_e_conexao_em_download_incompleto(
+    tmp_path: Path,
+) -> None:
+    """Cenário D: falha ou truncamento no download remove .part e não deixa .7z inválido."""
+    ftp = MagicMock()
+    ftp.nlst.return_value = ["CAGEDMOV202501.7z"]
+    ftp.size.return_value = 100
+    ftp.retrbinary.side_effect = lambda _cmd, callback, **_kw: callback(b"incompleto")
+    destino = tmp_path / "CAGEDMOV202501.7z"
+
+    with pytest.raises(OSError, match="Download incompleto"):
+        extract_ftp.baixar(ftp, "202501", "CAGEDMOV202501.7z", destino)
+
+    assert not destino.exists()
+    assert not destino.with_suffix(".7z.part").exists()
+
+
+def test_retry_ftp_cenario_e_erro_permanente_nao_provoca_retry(
+    bronze_isolada: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cenário E: erro permanente (5xx error_perm) falha imediatamente sem novas tentativas."""
+    ftp = MagicMock()
+    pausas: list[int] = []
+    reconectou = False
+
+    def nao_reconectar() -> None:
+        nonlocal reconectou
+        reconectou = True
+        raise AssertionError("não deveria tentar reconectar em erro permanente")
+
+    def baixar_erro_permanente(_ftp: object, _c: str, _n: str, _d: Path) -> bool:
+        raise error_perm("550 Permissão negada no arquivo")
+
+    monkeypatch.setattr(extract_ftp, "conectar", nao_reconectar)
+    monkeypatch.setattr(extract_ftp, "baixar", baixar_erro_permanente)
+    monkeypatch.setattr(extract_ftp.time, "sleep", pausas.append)
+
+    with pytest.raises(error_perm, match="550"):
+        extract_ftp.processar(ftp, "202501", "MOV", force=False)
+
+    assert not reconectou
+    assert pausas == []
+    assert list(extract_ftp.TMP_DIR.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("falhas_iniciais", "pausas_esperadas"),
+    [
+        ([], []),  # Cenário A: sucesso na 1ª tentativa
+        ([OSError("timeout na 1ª conexão")], [5]),  # Cenário B: 1 falha + sucesso na 2ª
+        (
+            [OSError("queda 1"), EOFError("queda 2")],
+            [5, 10],
+        ),  # Cenário C: 2 falhas + sucesso na 3ª
+    ],
+    ids=["cenario_a_sucesso_imediato", "cenario_b_uma_falha", "cenario_c_duas_falhas"],
+)
+def test_conexao_inicial_ftp_cenarios_a_b_c_recuperacao(
+    bronze_isolada: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    falhas_iniciais: list[Exception],
+    pausas_esperadas: list[int],
+) -> None:
+    """Cenários A, B e C: conexão inicial em main() aplica retry com backoff 5s/10s e fecha sockets falhos."""
+    pausas: list[int] = []
+    instancias_falhas: list[MagicMock] = []
+    ftp_ok = MagicMock(name="ftp_ok")
+    eventos = [*falhas_iniciais, ftp_ok]
+    chamadas_processar: list[tuple[object, str, str, bool]] = []
+
+    def criar_ftp(*_args: object, **_kwargs: object) -> MagicMock:
+        item = eventos.pop(0)
+        if isinstance(item, Exception):
+            inst = MagicMock(name="ftp_falho")
+            inst.login.side_effect = item
+            instancias_falhas.append(inst)
+            return inst
+        return item
+
+    def processar_stub(ftp: object, comp: str, tipo: str, force: bool) -> object:
+        chamadas_processar.append((ftp, comp, tipo, force))
+        return ftp
+
+    monkeypatch.setattr(extract_ftp, "FTP", criar_ftp)
+    monkeypatch.setattr(extract_ftp, "processar", processar_stub)
+    monkeypatch.setattr(extract_ftp.time, "sleep", pausas.append)
+    monkeypatch.setattr(
+        sys, "argv", ["extract_ftp.py", "--competencia", "202501", "--tipos", "MOV"]
+    )
+
+    extract_ftp.main()
+
+    assert eventos == []
+    assert pausas == pausas_esperadas
+    for inst in instancias_falhas:
+        inst.close.assert_called_once()
+    assert chamadas_processar == [(ftp_ok, "202501", "MOV", False)]
+    ftp_ok.quit.assert_called_once()
+
+
+def test_conexao_inicial_ftp_cenario_d_tres_falhas_consecutivas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cenário D: 3 falhas consecutivas na conexão inicial encerram sem 4ª tentativa e propagam erro com nota."""
+    pausas: list[int] = []
+    instancias: list[MagicMock] = []
+
+    def criar_ftp(*_args: object, **_kwargs: object) -> MagicMock:
+        inst = MagicMock(name=f"ftp_{len(instancias) + 1}")
+        inst.login.side_effect = OSError(
+            f"indisponível na tentativa {len(instancias) + 1}"
+        )
+        instancias.append(inst)
+        return inst
+
+    monkeypatch.setattr(extract_ftp, "FTP", criar_ftp)
+    monkeypatch.setattr(extract_ftp.time, "sleep", pausas.append)
+    monkeypatch.setattr(
+        sys, "argv", ["extract_ftp.py", "--competencia", "202501", "--tipos", "MOV"]
+    )
+
+    with pytest.raises(OSError, match="indisponível na tentativa 3") as exc_info:
+        extract_ftp.main()
+
+    assert len(instancias) == 3
+    assert pausas == [5, 10]
+    for inst in instancias:
+        inst.close.assert_called_once()
+    assert any("Esgotadas 3 tentativas" in n for n in exc_info.value.__notes__)
+
+
+def test_conexao_inicial_ftp_cenario_e_erro_permanente_sem_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cenário E: erro permanente (error_perm 5xx) na conexão inicial falha imediatamente sem retry."""
+    pausas: list[int] = []
+    instancias: list[MagicMock] = []
+
+    def criar_ftp(*_args: object, **_kwargs: object) -> MagicMock:
+        inst = MagicMock(name="ftp_perm")
+        inst.login.side_effect = error_perm("530 Login incorrect")
+        instancias.append(inst)
+        return inst
+
+    monkeypatch.setattr(extract_ftp, "FTP", criar_ftp)
+    monkeypatch.setattr(extract_ftp.time, "sleep", pausas.append)
+    monkeypatch.setattr(
+        sys, "argv", ["extract_ftp.py", "--competencia", "202501", "--tipos", "MOV"]
+    )
+
+    with pytest.raises(error_perm, match="530"):
+        extract_ftp.main()
+
+    assert len(instancias) == 1
+    assert pausas == []
+    instancias[0].close.assert_called_once()
+
+
+def test_baixar_cenario_f_falha_sem_arquivo_anterior_remove_part(
+    tmp_path: Path,
+) -> None:
+    """Cenário F: falha durante download sem arquivo final anterior remove .part e não cria .7z."""
+    ftp = MagicMock()
+    ftp.nlst.return_value = ["CAGEDMOV202501.7z"]
+    ftp.size.return_value = 100
+
+    def retr_falho(_cmd: str, callback: object, **_kw: object) -> None:
+        callback(b"bytes-parciais")  # type: ignore[operator]
+        raise OSError("queda de conexão durante RETR")
+
+    ftp.retrbinary.side_effect = retr_falho
+    destino = tmp_path / "CAGEDMOV202501.7z"
+
+    with pytest.raises(OSError, match="queda de conexão"):
+        extract_ftp.baixar(ftp, "202501", "CAGEDMOV202501.7z", destino)
+
+    assert not destino.exists()
+    assert not destino.with_suffix(".7z.part").exists()
+
+
+def test_baixar_cenario_g_falha_preserva_arquivo_final_preexistente(
+    tmp_path: Path,
+) -> None:
+    """Cenário G: falha no download preserva integralmente o arquivo .7z válido preexistente e remove .part."""
+    ftp = MagicMock()
+    ftp.nlst.return_value = ["CAGEDMOV202501.7z"]
+    ftp.size.return_value = 100
+
+    def retr_falho(_cmd: str, callback: object, **_kw: object) -> None:
+        callback(b"lixo-parcial-interrompido")  # type: ignore[operator]
+        raise OSError("conexão perdida no meio do download")
+
+    ftp.retrbinary.side_effect = retr_falho
+    destino = tmp_path / "CAGEDMOV202501.7z"
+    destino.write_bytes(b"7z-valido-original")
+
+    with pytest.raises(OSError, match="conexão perdida"):
+        extract_ftp.baixar(ftp, "202501", "CAGEDMOV202501.7z", destino)
+
+    assert destino.exists()
+    assert destino.read_bytes() == b"7z-valido-original"
+    assert not destino.with_suffix(".7z.part").exists()
+
+
+def test_baixar_cenario_h_download_completo_substitui_arquivo_anterior(
+    tmp_path: Path,
+) -> None:
+    """Cenário H: download bem-sucedido substitui atomicamente o arquivo anterior e não deixa .part."""
+    conteudo_novo = b"7z-novo-completo-verificado"
+    ftp = MagicMock()
+    ftp.nlst.return_value = ["CAGEDMOV202501.7z"]
+    ftp.size.return_value = len(conteudo_novo)
+    ftp.retrbinary.side_effect = lambda _cmd, callback, **_kw: callback(conteudo_novo)
+
+    destino = tmp_path / "CAGEDMOV202501.7z"
+    destino.write_bytes(b"7z-versao-anterior")
+
+    assert extract_ftp.baixar(ftp, "202501", "CAGEDMOV202501.7z", destino) is True
+    assert destino.exists()
+    assert destino.read_bytes() == conteudo_novo
+    assert not destino.with_suffix(".7z.part").exists()
+
+
+def test_baixar_cenario_i_download_incompleto_preserva_arquivo_anterior(
+    tmp_path: Path,
+) -> None:
+    """Cenário I: download com tamanho menor que SIZE lança OSError, remove .part e preserva .7z anterior."""
+    ftp = MagicMock()
+    ftp.nlst.return_value = ["CAGEDMOV202501.7z"]
+    ftp.size.return_value = 200
+    ftp.retrbinary.side_effect = lambda _cmd, callback, **_kw: callback(b"truncado")
+
+    destino = tmp_path / "CAGEDMOV202501.7z"
+    destino.write_bytes(b"7z-intacto-anterior")
+
+    with pytest.raises(OSError, match="Download incompleto"):
+        extract_ftp.baixar(ftp, "202501", "CAGEDMOV202501.7z", destino)
+
+    assert destino.exists()
+    assert destino.read_bytes() == b"7z-intacto-anterior"
+    assert not destino.with_suffix(".7z.part").exists()

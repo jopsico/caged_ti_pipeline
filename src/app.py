@@ -1,7 +1,7 @@
 """Dashboard Streamlit — Camada de Data Serving do pipeline CAGED TI.
 
-Consome as tabelas do schema `gold` em `data/caged.duckdb` em modo read-only
-(sem risco de lock com o `dbt build`).
+Consome as tabelas do schema `gold` em `data/caged.duckdb` em modo `read_only=True`,
+impedindo alterações no banco durante a visualização.
 
 Uso (na raiz do repositório):
     python -m streamlit run src/app.py
@@ -17,9 +17,9 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from metricas import SQL_JANELA_ANALISE
+from metricas import SQL_JANELA_ANALISE, gap_percentual
 
-st.set_page_config(page_title="CAGED TI - Analytics", page_icon="📊", layout="wide")
+st.set_page_config(page_title="CAGED TI - Analytics", layout="wide")
 
 DB_PATH = Path(__file__).resolve().parents[1] / "data" / "caged.duckdb"
 RECORTES = ["Ceará", "Resto do Nordeste", "Resto do Brasil"]
@@ -141,7 +141,7 @@ FILTRO = (
 )
 PARAMS = (comp_ini, comp_fim, *recortes_sel, *niveis_sel)
 
-st.title("📊 Dinâmica do Emprego Formal de TI no Brasil")
+st.title("Dinâmica do Emprego Formal de TI no Brasil")
 st.markdown(
     f"Novo CAGED · **{fmt_comp(comp_ini)} a {fmt_comp(comp_fim)}** · "
     "Camada **Gold** (`DuckDB` + `dbt`) comparando **Ceará, Resto do Nordeste e Resto do Brasil**."
@@ -184,7 +184,7 @@ kpi_medianas = consultar(
 
 kpi = pd.concat([kpi_volume, kpi_medianas])
 
-gap = (kpi["med_entrou"] / kpi["med_saiu"] - 1) * 100 if kpi["med_saiu"] else None
+gap = gap_percentual(kpi["med_entrou"], kpi["med_saiu"])
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("Admissões", inteiro(kpi["admissoes"]))
 c2.metric("Desligamentos", inteiro(kpi["desligamentos"]))
@@ -196,7 +196,10 @@ c4.metric(
 )
 c5.metric("Mediana Desligados", brl(kpi["med_saiu"]))
 c6.metric(
-    "% Jovens (≤ 24) nas Admissões", f"{kpi['pct_jovens']:.1f}%".replace(".", ",")
+    "% Jovens (≤ 24) nas Admissões",
+    "—"
+    if pd.isna(kpi["pct_jovens"])
+    else f"{kpi['pct_jovens']:.1f}%".replace(".", ","),
 )
 
 st.divider()
@@ -260,9 +263,12 @@ with aba_h1:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    sal["Gap Entrada vs. Saída (%)"] = (
-        sal["Admitidos (Entrou)"] / sal["Desligados (Saiu)"] - 1
-    ) * 100
+    sal["Gap Entrada vs. Saída (%)"] = [
+        gap_percentual(e, s)
+        for e, s in zip(
+            sal["Admitidos (Entrou)"], sal["Desligados (Saiu)"], strict=True
+        )
+    ]
     tabela = sal.pivot(
         index="nivel_carreira",
         columns="recorte_geografico",

@@ -46,10 +46,6 @@ select
     m.salario_valido,
     m.valor_salario_fixo,
     m.tipo_movimentacao_codigo,
-    case
-        when m.indicador_exclusao = 0 and m.tipo_movimentacao_codigo in (10, 25) then 1
-        else 0
-    end                                                                    as is_primeiro_emprego,
     m.indicador_aprendiz,
     m.ind_trab_intermitente,
     m.ind_trab_parcial,

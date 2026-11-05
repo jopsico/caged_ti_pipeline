@@ -14,7 +14,6 @@ select
     sum(saldo_ajustado)                                                    as saldo_liquido,
 
     -- Métricas de Porta de Entrada e Júnior (H2)
-    sum(is_primeiro_emprego)                                               as admissoes_primeiro_emprego,
     sum(case when is_admissao_ativa = 1 and idade <= 24 then 1 else 0 end) as admissoes_jovens_ate_24,
     round(
         100.0 * sum(case when is_admissao_ativa = 1 and idade <= 24 then 1 else 0 end)
